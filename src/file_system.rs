@@ -61,15 +61,6 @@ fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
 ///
 /// The implementation uses `RwLock` to protect shared data, allowing concurrent read
 /// operations while ensuring exclusive access for write operations.
-/// FUSE filesystem implementation for CernVM-FS.
-///
-/// This struct implements the `FilesystemMT` trait from the `fuse_mt` crate,
-/// providing filesystem operations for a CernVM-FS repository. It handles operations
-/// like reading files, listing directories, and retrieving file attributes by delegating
-/// to an underlying `Repository` instance.
-///
-/// The implementation uses `RwLock` to protect shared data, allowing concurrent read
-/// operations while ensuring exclusive access for write operations.
 #[derive(Debug)]
 pub struct CernvmFileSystem {
     /// The repository instance, protected by a read-write lock.
@@ -502,7 +493,7 @@ impl FilesystemMT for CernvmFileSystem {
         let path = path.to_str().ok_or(libc::ENOENT)?;
         log::info!("Accessing: {path}");
         let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
-        repo.lookup(path).map(|_| Ok(()))?
+        Ok(repo.lookup(path).map(|_| ())?)
     }
 }
 

@@ -45,9 +45,7 @@ impl DatabaseObject {
     }
 
     fn open_database(path: &Path) -> CvmfsResult<Connection> {
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_FULL_MUTEX;
         Ok(Connection::open_with_flags(path, flags)?)
     }
 
@@ -60,7 +58,7 @@ impl DatabaseObject {
     /// # Returns
     ///
     /// Returns a Result containing the prepared Statement or an error if preparation fails.
-    pub fn create_prepared_statement(&self, sql: &str) -> CvmfsResult<Statement> {
+    pub fn create_prepared_statement(&self, sql: &str) -> CvmfsResult<Statement<'_>> {
         Ok(self.connection.prepare(sql)?)
     }
 
