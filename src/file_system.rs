@@ -178,13 +178,23 @@ impl FilesystemMT for CernvmFileSystem {
 	/// Returns a `ResultData` containing the bytes of the symlink target, or an error
 	/// code if the operation failed.
 	fn readlink(&self, _req: RequestInfo, path: &Path) -> ResultData {
-		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
+		let path = path.to_str().ok_or(libc::ENOENT)?;
 		log::info!("Reading link: {path}");
+		if let Some(target) = self
+			.lookup_cache
+			.read()
+			.ok()
+			.and_then(|c| c.get(path).cloned())
+			.filter(|e| e.is_symlink())
+			.and_then(|e| e.symlink.clone())
+		{
+			return Ok(target.into_bytes());
+		}
 		let result = self.cached_lookup(path)?;
 		if !result.is_symlink() {
 			return Err(libc::ENOLINK);
 		}
-		Ok(result.symlink.as_ref().ok_or(CvmfsError::FileNotFound)?.clone().into_bytes())
+		Ok(result.symlink.as_ref().ok_or(libc::ENOLINK)?.clone().into_bytes())
 	}
 
 	/// Opens a file and returns a file handle
