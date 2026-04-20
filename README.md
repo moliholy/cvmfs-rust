@@ -18,12 +18,20 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 ## Features
 
 - FUSE filesystem mounting via `fuse_mt` (multi-threaded)
-- Transparent zlib decompression of content-addressed objects
+- Transparent decompression (zlib, LZ4, Zstd) of content-addressed objects
 - RSA-PKCS1v15 signature verification of repository manifests
+- Whitelist validation (repository name matching + expiry checks)
 - SQLite catalog traversal with nested catalog support
+- Multiple hash algorithms: SHA-1, RIPEMD-160, SHA-256, SHAKE-128
+- Full directory entry metadata: uid/gid, hardlinks, xattr, special file types
 - Chunked file reassembly for large files
-- Local object caching with content-addressed storage
+- External data file support (content stored outside CAS)
+- Local object caching with TTL-based invalidation and negative caching
+- Reflog support for tracking historical root catalog hashes
 - HTTP/HTTPS retrieval from Stratum-1 replica servers
+- Mirror failover with automatic retry across multiple sources
+- Geolocation-based server selection via CVMFS geo API
+- DNS-based repository server discovery via TXT records
 
 ## Quick Start
 
@@ -98,12 +106,33 @@ let mut contents = String::new();
 file.read_to_string(&mut contents)?;
 ```
 
+### Mirror failover
+
+```rust
+use cvmfs::fetcher::Fetcher;
+
+let fetcher = Fetcher::with_mirrors(
+    &["http://primary.cern.ch/opt/boss", "http://mirror1.cern.ch/opt/boss"],
+    "/tmp/cache",
+    true,
+)?;
+```
+
+### DNS-based discovery
+
+```rust
+use cvmfs::dns::discover_servers;
+
+let servers = discover_servers("boss.cern.ch")?;
+```
+
 ## Development
 
 ```bash
-cargo test --workspace -- --test-threads=1
-cargo clippy --workspace --all-targets -- -D warnings
-cargo +nightly fmt --all
+make test           # run all tests (uses cargo-nextest)
+make lint           # clippy with -D warnings
+make fmt            # format with nightly rustfmt
+make coverage       # generate coverage report
 ```
 
 ## License
