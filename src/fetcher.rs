@@ -318,3 +318,224 @@ impl Fetcher {
 		Ok(buf)
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	fn tmp_cache(name: &str) -> String {
+		let dir =
+			std::env::temp_dir().join(format!("cvmfs_fetcher_{}_{}", name, std::process::id()));
+		fs::create_dir_all(&dir).unwrap();
+		dir.to_str().unwrap().to_string()
+	}
+
+	#[test]
+	fn try_decompress_zlib_valid() {
+		use std::io::Write;
+		let mut encoder =
+			flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+		encoder.write_all(b"hello world").unwrap();
+		let compressed = encoder.finish().unwrap();
+		let result = Fetcher::try_decompress_zlib(&compressed).unwrap();
+		assert_eq!(result, b"hello world");
+	}
+
+	#[test]
+	fn try_decompress_zlib_invalid() {
+		let result = Fetcher::try_decompress_zlib(b"not zlib data");
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn try_decompress_zstd_valid() {
+		let data = b"hello zstd world";
+		let compressed = zstd::stream::encode_all(&data[..], 3).unwrap();
+		let result = Fetcher::try_decompress_zstd(&compressed).unwrap();
+		assert_eq!(result, data);
+	}
+
+	#[test]
+	fn try_decompress_zstd_invalid() {
+		let result = Fetcher::try_decompress_zstd(b"not zstd data");
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn try_decompress_lz4_valid() {
+		use lz4_flex::frame::FrameEncoder;
+		let mut encoder = FrameEncoder::new(Vec::new());
+		std::io::Write::write_all(&mut encoder, b"hello lz4").unwrap();
+		let compressed = encoder.finish().unwrap();
+		let result = Fetcher::try_decompress_lz4(&compressed).unwrap();
+		assert_eq!(result, b"hello lz4");
+	}
+
+	#[test]
+	fn try_decompress_lz4_invalid() {
+		let result = Fetcher::try_decompress_lz4(b"not lz4 data");
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn decompress_tries_all_formats() {
+		use std::io::Write;
+		let cache_dir = tmp_cache("decompress");
+		let output = format!("{cache_dir}/output");
+
+		let mut encoder =
+			flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+		encoder.write_all(b"zlib content").unwrap();
+		let compressed = encoder.finish().unwrap();
+		Fetcher::decompress(&compressed, &output).unwrap();
+		assert_eq!(fs::read_to_string(&output).unwrap(), "zlib content");
+
+		let compressed = zstd::stream::encode_all(&b"zstd content"[..], 3).unwrap();
+		Fetcher::decompress(&compressed, &output).unwrap();
+		assert_eq!(fs::read_to_string(&output).unwrap(), "zstd content");
+
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn decompress_all_formats_fail() {
+		let cache_dir = tmp_cache("decompress_fail");
+		let output = format!("{cache_dir}/output");
+		let result = Fetcher::decompress(b"garbage", &output);
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn verify_hash_correct() {
+		let data = b"test data for hashing";
+		let mut hasher = Sha1::new();
+		hasher.update(data);
+		let hash = hex::encode(hasher.finalize());
+		Fetcher::verify_hash(data, &hash).unwrap();
+	}
+
+	#[test]
+	fn verify_hash_with_suffix() {
+		let data = b"test";
+		let mut hasher = Sha1::new();
+		hasher.update(data);
+		let hash = format!("{}-rmd160", hex::encode(hasher.finalize()));
+		Fetcher::verify_hash(data, &hash).unwrap();
+	}
+
+	#[test]
+	fn verify_hash_mismatch() {
+		let result = Fetcher::verify_hash(b"data", "0000000000000000000000000000000000000000");
+		assert!(result.is_err());
+	}
+
+	#[test]
+	fn set_proxy_stores_value() {
+		let cache_dir = tmp_cache("proxy");
+		let mut fetcher = Fetcher::new("http://example.com", &cache_dir, false).unwrap();
+		assert!(fetcher.proxy.is_none());
+		fetcher.set_proxy("http://proxy:8080");
+		assert_eq!(fetcher.proxy.as_deref(), Some("http://proxy:8080"));
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn all_sources_includes_mirrors() {
+		let cache_dir = tmp_cache("sources");
+		let fetcher = Fetcher::with_mirrors(
+			&["http://a.com", "http://b.com", "http://c.com"],
+			&cache_dir,
+			false,
+		)
+		.unwrap();
+		let sources: Vec<&str> = fetcher.all_sources().collect();
+		assert_eq!(sources, vec!["http://a.com", "http://b.com", "http://c.com"]);
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn with_mirrors_empty_errors() {
+		let cache_dir = tmp_cache("mirrors_empty");
+		fs::create_dir_all(&cache_dir).unwrap();
+		let result = Fetcher::with_mirrors(&[], &cache_dir, false);
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn build_client_no_proxy() {
+		let cache_dir = tmp_cache("client_noproxy");
+		let fetcher = Fetcher::new("http://example.com", &cache_dir, false).unwrap();
+		let client = fetcher.build_client();
+		assert!(client.is_ok());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn build_client_with_proxy() {
+		let cache_dir = tmp_cache("client_proxy");
+		let mut fetcher = Fetcher::new("http://example.com", &cache_dir, false).unwrap();
+		fetcher.set_proxy("http://proxy:3128");
+		let client = fetcher.build_client();
+		assert!(client.is_ok());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn new_with_local_dir() {
+		let cache_dir = tmp_cache("local_src");
+		let src_dir = tmp_cache("local_repo");
+		let fetcher = Fetcher::new(&src_dir, &cache_dir, false).unwrap();
+		assert!(fetcher.source.starts_with("file://"));
+		fs::remove_dir_all(&cache_dir).ok();
+		fs::remove_dir_all(&src_dir).ok();
+	}
+
+	#[test]
+	fn offline_and_io_errors_default() {
+		let cache_dir = tmp_cache("defaults");
+		let fetcher = Fetcher::new("http://example.com", &cache_dir, false).unwrap();
+		assert!(!fetcher.is_offline());
+		assert_eq!(fetcher.io_error_count(), 0);
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_offline_returns_error() {
+		let cache_dir = tmp_cache("offline");
+		let fetcher = Fetcher::new("http://example.com", &cache_dir, true).unwrap();
+		fetcher.offline.store(true, Ordering::Relaxed);
+		let result = fetcher.retrieve_file("nonexistent");
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_cached_returns_path() {
+		let cache_dir = tmp_cache("cached");
+		let fetcher = Fetcher::new("http://example.com", &cache_dir, true).unwrap();
+		let file_path = format!("{cache_dir}/testfile");
+		fs::write(&file_path, b"cached content").unwrap();
+		let result = fetcher.retrieve_file("testfile").unwrap();
+		assert!(result.contains("testfile"));
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn download_content_and_store_writes_file() {
+		let cache_dir = tmp_cache("store");
+		let fetcher =
+			Fetcher::new("http://cvmfs-stratum-one.cern.ch/opt/boss", &cache_dir, true).unwrap();
+		let output = format!("{cache_dir}/.cvmfspublished");
+		fetcher
+			.download_content_and_store(
+				&output,
+				"http://cvmfs-stratum-one.cern.ch/opt/boss/.cvmfspublished",
+			)
+			.unwrap();
+		assert!(Path::new(&output).exists());
+		assert!(fs::read(&output).unwrap().len() > 10);
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+}

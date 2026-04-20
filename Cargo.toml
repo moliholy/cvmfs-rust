@@ -80,3 +80,4 @@ ref_option_ref = "allow"
 
 [dev-dependencies]
 serial_test = "3.4.0"
+flate2 = "1"

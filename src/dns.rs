@@ -90,4 +90,26 @@ mod tests {
 			assert!(servers.is_empty());
 		}
 	}
+
+	#[test]
+	fn extract_domain_multiple_dots() {
+		assert_eq!(extract_domain("a.b.c.d"), Some("b.c.d".to_string()));
+	}
+
+	#[test]
+	fn extract_domain_two_parts() {
+		assert_eq!(extract_domain("repo.org"), Some("org".to_string()));
+	}
+
+	#[test]
+	fn discover_servers_for_valid_domain() {
+		let result = discover_servers_for_domain("cern.ch");
+		assert!(result.is_ok());
+	}
+
+	#[test]
+	fn discover_servers_valid_fqrn() {
+		let result = discover_servers("atlas.cern.ch");
+		assert!(result.is_ok());
+	}
 }

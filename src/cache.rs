@@ -477,6 +477,111 @@ mod tests {
 	}
 
 	#[test]
+	fn cache_with_quota_builder() {
+		let dir = tmp_cache_dir("quota_builder");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap().with_quota(1024);
+		assert_eq!(cache.quota, 1024);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_with_ttl_builder() {
+		let dir = tmp_cache_dir("ttl_builder");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into())
+			.unwrap()
+			.with_ttl(Duration::from_secs(120), Duration::from_secs(10));
+		assert_eq!(cache.ttl, Duration::from_secs(120));
+		assert_eq!(cache.negative_ttl, Duration::from_secs(10));
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_size_empty() {
+		let dir = tmp_cache_dir("size_empty");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap();
+		cache.initialize().unwrap();
+		assert_eq!(cache.cache_size(), 0);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_size_with_files() {
+		let dir = tmp_cache_dir("size_files");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap();
+		cache.initialize().unwrap();
+
+		fs::write(dir.join("data/ab/file1"), vec![0u8; 100]).unwrap();
+		fs::write(dir.join("data/cd/file2"), vec![0u8; 200]).unwrap();
+		assert_eq!(cache.cache_size(), 300);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn enforce_quota_under_limit_noop() {
+		let dir = tmp_cache_dir("quota_under");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap().with_quota(10_000);
+		cache.initialize().unwrap();
+
+		fs::write(dir.join("data/ab/file1"), vec![0u8; 100]).unwrap();
+		cache.enforce_quota().unwrap();
+		assert!(dir.join("data/ab/file1").exists());
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn enforce_quota_over_limit_evicts() {
+		let dir = tmp_cache_dir("quota_over");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap().with_quota(100);
+		cache.initialize().unwrap();
+
+		fs::write(dir.join("data/ab/file1"), vec![0u8; 200]).unwrap();
+		fs::write(dir.join("data/cd/file2"), vec![0u8; 200]).unwrap();
+		let size_before = cache.cache_size();
+		assert!(size_before > 100);
+
+		cache.enforce_quota().unwrap();
+		let size_after = cache.cache_size();
+		assert!(size_after <= 100);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn collect_files_by_atime_finds_files() {
+		let dir = tmp_cache_dir("collect");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap();
+		cache.initialize().unwrap();
+
+		fs::write(dir.join("data/ab/f1"), b"a").unwrap();
+		fs::write(dir.join("data/cd/f2"), b"bb").unwrap();
+
+		let data_path = dir.join("data");
+		let files = Cache::collect_files_by_atime(&data_path);
+		assert_eq!(files.len(), 2);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn dir_size_empty_dir() {
+		let dir = tmp_cache_dir("dir_size_empty");
+		fs::create_dir_all(&dir).unwrap();
+		assert_eq!(Cache::dir_size(&dir), 0);
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn dir_size_nonexistent() {
+		let dir = PathBuf::from("/tmp/cvmfs_nonexistent_dir_size_test");
+		assert_eq!(Cache::dir_size(&dir), 0);
+	}
+
+	#[test]
 	fn cache_evict_clears_and_recreates() {
 		let dir = tmp_cache_dir("evict");
 		fs::create_dir_all(&dir).unwrap();

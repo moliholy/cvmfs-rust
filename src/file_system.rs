@@ -571,3 +571,79 @@ impl CernvmFileSystem {
 		})
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::directory_entry::Flags;
+
+	fn make_entry(flags: u32, mode: u16) -> DirectoryEntry {
+		DirectoryEntry {
+			md5_path_1: 0,
+			md5_path_2: 0,
+			parent_1: 0,
+			parent_2: 0,
+			content_hash: None,
+			flags,
+			size: 0,
+			mode,
+			mtime: 0,
+			name: String::new(),
+			symlink: None,
+			uid: 0,
+			gid: 0,
+			xattr: None,
+			content_hash_type: crate::directory_entry::ContentHashTypes::Sha1,
+			chunks: Vec::new(),
+			hardlinks: 0,
+		}
+	}
+
+	#[test]
+	fn map_type_directory() {
+		let entry = make_entry(Flags::Directory as u32, 0o40755);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::Directory);
+	}
+
+	#[test]
+	fn map_type_symlink() {
+		let entry = make_entry(Flags::Link as u32, 0o120777);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::Symlink);
+	}
+
+	#[test]
+	fn map_type_regular_file() {
+		let entry = make_entry(Flags::File as u32, 0o100644);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::RegularFile);
+	}
+
+	#[test]
+	fn map_type_socket() {
+		let entry = make_entry(Flags::File as u32, 0o140755);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::Socket);
+	}
+
+	#[test]
+	fn map_type_named_pipe() {
+		let entry = make_entry(Flags::File as u32, 0o010644);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::NamedPipe);
+	}
+
+	#[test]
+	fn map_type_block_device() {
+		let entry = make_entry(Flags::File as u32, 0o060660);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::BlockDevice);
+	}
+
+	#[test]
+	fn map_type_char_device() {
+		let entry = make_entry(Flags::File as u32, 0o020666);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::CharDevice);
+	}
+
+	#[test]
+	fn map_type_zero_mode_defaults_to_regular() {
+		let entry = make_entry(Flags::File as u32, 0);
+		assert_eq!(map_dirent_type_to_fs_kind(&entry), FileType::RegularFile);
+	}
+}
