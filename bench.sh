@@ -11,9 +11,13 @@ RUST_BIN="./target/release/cvmfs-cli"
 ITERATIONS=50
 
 cleanup() {
-    umount "$RUST_MOUNT" 2>/dev/null || true
-    umount "$CPP_MOUNT" 2>/dev/null || true
-    rm -rf "$RUST_MOUNT" "$CPP_MOUNT"
+    umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
+    umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
+    kill $RUST_PID 2>/dev/null || true
+    kill $CPP_PID 2>/dev/null || true
+    sleep 1
+    rmdir "$RUST_MOUNT" "$CPP_MOUNT" 2>/dev/null || true
+    rm -rf "$RUST_CACHE" "$CPP_CACHE"
 }
 trap cleanup EXIT
 
@@ -229,8 +233,8 @@ run_bench "md5 /testfile" \
     "md5 -q $RUST_MOUNT/testfile" \
     "md5 -q $CPP_MOUNT/testfile"
 
-# ── Heavy benchmarks (3 iterations, longer operations) ──
-ITERATIONS=3
+# ── Heavy benchmarks (1 iteration, long-running operations) ──
+ITERATIONS=1
 
 print_section "full file read"
 run_bench "cat offlinedb.db (chunked, full)" \

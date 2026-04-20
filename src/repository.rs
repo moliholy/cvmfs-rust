@@ -7,7 +7,7 @@ use crate::{
 	certificate::{CERTIFICATE_ROOT_PREFIX, Certificate},
 	common::{
 		ChunkedFile, CvmfsError, CvmfsResult, FileLike, LAST_REPLICATION_NAME, MANIFEST_NAME,
-		REFLOG_NAME, REPLICATING_NAME, WHITELIST_NAME, compose_object_path,
+		REFLOG_NAME, REPLICATING_NAME, RegularFile, WHITELIST_NAME, compose_object_path,
 	},
 	directory_entry::{Chunk, DirectoryEntry},
 	fetcher::Fetcher,
@@ -63,7 +63,7 @@ impl Repository {
 	) -> CvmfsResult<Box<dyn FileLike>> {
 		if dirent.is_external_file() {
 			let external_path = self.fetcher.retrieve_raw_file(path)?;
-			return Ok(Box::new(File::open(external_path)?));
+			return Ok(Box::new(RegularFile::open(external_path)?));
 		}
 		if dirent.has_chunks() {
 			let chunks: CvmfsResult<Vec<(String, Chunk)>> = dirent
@@ -95,7 +95,7 @@ impl Repository {
 					.as_str(),
 				"",
 			)?;
-			Ok(Box::new(File::open(path)?))
+			Ok(Box::new(RegularFile::open(path)?))
 		}
 	}
 

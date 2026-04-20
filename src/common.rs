@@ -8,11 +8,14 @@
 //! - Constants for configuration and file naming
 
 use std::{
+	collections::HashSet,
 	fmt::Debug,
 	fs::File,
 	io::{ErrorKind, Read, Seek, SeekFrom},
 	os::fd::{AsRawFd, RawFd},
 	path::{Path, PathBuf},
+	sync::{Arc, Mutex},
+	thread,
 };
 
 use crate::{
@@ -38,53 +41,154 @@ pub const REPLICATING_NAME: &str = ".cvmfs_is_snapshotting";
 pub const REFLOG_NAME: &str = ".cvmfsreflog";
 
 pub type CvmfsResult<R> = Result<R, CvmfsError>;
-pub trait FileLike: Debug + Read + Seek + AsRawFd + Send + Sync {}
 
-impl FileLike for File {}
+pub trait FileLike: Debug + AsRawFd + Send + Sync {
+	fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize>;
+	fn file_size(&self) -> u64;
+}
 
-/// Represents a file split into multiple chunks for efficient storage and transfer
+impl FileLike for RegularFile {
+	fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+		let mut file = &self.inner;
+		file.seek(SeekFrom::Start(offset))?;
+		file.read(buf)
+	}
+
+	fn file_size(&self) -> u64 {
+		self.size
+	}
+}
+
+#[derive(Debug)]
+pub struct RegularFile {
+	inner: File,
+	size: u64,
+}
+
+impl RegularFile {
+	pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
+		let file = File::open(path.as_ref())?;
+		let size = file.metadata()?.len();
+		Ok(Self { inner: file, size })
+	}
+}
+
+impl AsRawFd for RegularFile {
+	fn as_raw_fd(&self) -> RawFd {
+		self.inner.as_raw_fd()
+	}
+}
+
+const PREFETCH_AHEAD: usize = 8;
+
+/// Represents a file split into multiple chunks for efficient storage and transfer.
 ///
-/// A ChunkedFile maintains metadata about file chunks and provides implementations
-/// for standard file operations like reading and seeking across chunks.
+/// Uses binary search for chunk lookup, caches opened file handles, and prefetches
+/// upcoming chunks in background threads to hide network latency.
 #[derive(Debug)]
 pub struct ChunkedFile {
-	/// Total size of the file in bytes.
 	size: u64,
-	/// Vector of chunk paths and their metadata.
 	chunks: Vec<(String, Chunk)>,
-	/// Current position in the file.
-	position: u64,
-	/// Fetcher instance for retrieving chunks.
-	fetcher: Fetcher,
+	fetcher: Arc<Fetcher>,
+	state: Mutex<ChunkedFileState>,
+}
+
+#[derive(Debug)]
+struct ChunkedFileState {
+	cached_index: Option<usize>,
+	cached_file: Option<File>,
+	prefetched: HashSet<usize>,
 }
 
 impl ChunkedFile {
 	pub(crate) fn new(chunks: Vec<(String, Chunk)>, size: u64, fetcher: Fetcher) -> Self {
-		Self { chunks, position: 0, size, fetcher }
+		Self {
+			chunks,
+			size,
+			fetcher: Arc::new(fetcher),
+			state: Mutex::new(ChunkedFileState {
+				cached_index: None,
+				cached_file: None,
+				prefetched: HashSet::new(),
+			}),
+		}
+	}
+
+	fn find_chunk_index(&self, position: u64) -> Option<usize> {
+		if self.chunks.is_empty() || position >= self.size {
+			return None;
+		}
+		let idx = self
+			.chunks
+			.partition_point(|(_, chunk)| (chunk.offset as u64) <= position)
+			.saturating_sub(1);
+		let (_, chunk) = &self.chunks[idx];
+		let end = chunk.offset as u64 + chunk.size as u64;
+		if position >= chunk.offset as u64 && position < end { Some(idx) } else { None }
+	}
+
+	fn open_chunk(&self, index: usize) -> std::io::Result<File> {
+		let (path, _) = &self.chunks[index];
+		let local_path =
+			self.fetcher.retrieve_file(path.as_str()).map_err(|_| ErrorKind::Unsupported)?;
+		File::open(local_path)
+	}
+
+	fn prefetch_chunks(&self, from_index: usize, state: &mut ChunkedFileState) {
+		for i in from_index + 1..self.chunks.len().min(from_index + 1 + PREFETCH_AHEAD) {
+			if state.prefetched.contains(&i) {
+				continue;
+			}
+			state.prefetched.insert(i);
+			let fetcher = Arc::clone(&self.fetcher);
+			let path = self.chunks[i].0.clone();
+			thread::spawn(move || {
+				let _ = fetcher.retrieve_file(path.as_str());
+			});
+		}
 	}
 }
 
-impl Read for ChunkedFile {
-	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl FileLike for ChunkedFile {
+	fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
+		if buf.is_empty() || offset >= self.size {
+			return Ok(0);
+		}
+
+		let mut state = self.state.lock().map_err(|_| ErrorKind::Other)?;
+		let mut position = offset;
 		let mut currently_read = 0;
-		let mut index = self
-			.chunks
-			.iter()
-			.position(|(_, chunk)| {
-				let offset = chunk.offset as u64;
-				let size = chunk.size as u64;
-				self.position >= offset && self.position < offset + size
-			})
-			.unwrap_or(usize::MAX);
+
+		let mut index = match self.find_chunk_index(position) {
+			Some(i) => i,
+			None => return Ok(0),
+		};
+
 		while currently_read < buf.len() && index < self.chunks.len() {
-			let (path, chunk) = &self.chunks[index];
-			let chunk_position = self.position - chunk.offset as u64;
-			let remaining_in_chunk = (chunk.size as u64).saturating_sub(chunk_position);
-			let local_path =
-				self.fetcher.retrieve_file(path.as_str()).map_err(|_| ErrorKind::Unsupported)?;
-			let mut file = File::open(local_path).map_err(|_| ErrorKind::NotFound)?;
-			file.seek(SeekFrom::Start(chunk_position)).map_err(|_| ErrorKind::NotSeekable)?;
+			let (_, chunk) = &self.chunks[index];
+			let chunk_start = chunk.offset as u64;
+			let chunk_end = chunk_start + chunk.size as u64;
+
+			if position >= chunk_end {
+				index += 1;
+				continue;
+			}
+
+			let chunk_position = position - chunk_start;
+			let remaining_in_chunk = chunk_end - position;
 			let max_to_read = (buf.len() - currently_read).min(remaining_in_chunk as usize);
+
+			let need_open = state.cached_index != Some(index);
+			if need_open {
+				self.prefetch_chunks(index, &mut state);
+				let file = self.open_chunk(index)?;
+				state.cached_index = Some(index);
+				state.cached_file = Some(file);
+			}
+
+			let file = state.cached_file.as_mut().ok_or(ErrorKind::Other)?;
+			file.seek(SeekFrom::Start(chunk_position))?;
+
 			let dest = &mut buf[currently_read..currently_read + max_to_read];
 			let mut chunk_bytes_read = 0;
 			while chunk_bytes_read < max_to_read {
@@ -94,26 +198,17 @@ impl Read for ChunkedFile {
 				}
 				chunk_bytes_read += bytes_read;
 			}
+
 			currently_read += chunk_bytes_read;
-			self.position += chunk_bytes_read as u64;
+			position += chunk_bytes_read as u64;
 			index += 1;
 		}
+
 		Ok(currently_read)
 	}
-}
 
-impl Seek for ChunkedFile {
-	fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
-		let position: i64 = match pos {
-			SeekFrom::Start(p) => p as i64,
-			SeekFrom::End(p) => self.size as i64 + p,
-			SeekFrom::Current(p) => self.position as i64 + p,
-		};
-		if position < 0 {
-			return Err(ErrorKind::UnexpectedEof.into());
-		}
-		self.position = position as u64;
-		Ok(self.position)
+	fn file_size(&self) -> u64 {
+		self.size
 	}
 }
 
@@ -128,8 +223,6 @@ impl AsRawFd for ChunkedFile {
 		u64::from_le_bytes(int_bytes.try_into().expect("Casting to u64 should work")) as RawFd
 	}
 }
-
-impl FileLike for ChunkedFile {}
 
 /// Represents errors that can occur during CVMFS operations
 ///
@@ -260,7 +353,6 @@ pub fn compose_object_path(object_hash: &str, hash_suffix: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use std::io::SeekFrom;
 
 	#[test]
 	fn split_md5_all_zeros() {
@@ -357,74 +449,93 @@ mod tests {
 	}
 
 	#[test]
-	fn chunked_file_seek_start() {
-		let tmp = std::env::temp_dir().join(format!("cvmfs_test_seek_{}", std::process::id()));
-		std::fs::create_dir_all(&tmp).unwrap();
-		let cache_dir = tmp.to_str().unwrap();
-		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let mut cf = ChunkedFile::new(vec![], 1000, fetcher);
-
-		let pos = cf.seek(SeekFrom::Start(500)).unwrap();
-		assert_eq!(pos, 500);
-		assert_eq!(cf.position, 500);
-
-		std::fs::remove_dir_all(&tmp).ok();
-	}
-
-	#[test]
-	fn chunked_file_seek_current() {
-		let tmp = std::env::temp_dir().join(format!("cvmfs_test_seekcur_{}", std::process::id()));
-		std::fs::create_dir_all(&tmp).unwrap();
-		let cache_dir = tmp.to_str().unwrap();
-		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let mut cf = ChunkedFile::new(vec![], 1000, fetcher);
-
-		cf.seek(SeekFrom::Start(100)).unwrap();
-		let pos = cf.seek(SeekFrom::Current(50)).unwrap();
-		assert_eq!(pos, 150);
-
-		std::fs::remove_dir_all(&tmp).ok();
-	}
-
-	#[test]
-	fn chunked_file_seek_end() {
-		let tmp = std::env::temp_dir().join(format!("cvmfs_test_seekend_{}", std::process::id()));
-		std::fs::create_dir_all(&tmp).unwrap();
-		let cache_dir = tmp.to_str().unwrap();
-		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let mut cf = ChunkedFile::new(vec![], 1000, fetcher);
-
-		let pos = cf.seek(SeekFrom::End(-100)).unwrap();
-		assert_eq!(pos, 900);
-
-		std::fs::remove_dir_all(&tmp).ok();
-	}
-
-	#[test]
-	fn chunked_file_seek_negative_position_errors() {
-		let tmp = std::env::temp_dir().join(format!("cvmfs_test_seekneg_{}", std::process::id()));
-		std::fs::create_dir_all(&tmp).unwrap();
-		let cache_dir = tmp.to_str().unwrap();
-		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let mut cf = ChunkedFile::new(vec![], 100, fetcher);
-
-		let result = cf.seek(SeekFrom::End(-200));
-		assert!(result.is_err());
-
-		std::fs::remove_dir_all(&tmp).ok();
-	}
-
-	#[test]
-	fn chunked_file_read_empty_chunks() {
+	fn chunked_file_read_at_empty_chunks() {
 		let tmp = std::env::temp_dir().join(format!("cvmfs_test_readmt_{}", std::process::id()));
 		std::fs::create_dir_all(&tmp).unwrap();
 		let cache_dir = tmp.to_str().unwrap();
 		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let mut cf = ChunkedFile::new(vec![], 0, fetcher);
+		let cf = ChunkedFile::new(vec![], 0, fetcher);
 
 		let mut buf = [0u8; 16];
-		let n = cf.read(&mut buf).unwrap();
+		let n = cf.read_at(0, &mut buf).unwrap();
 		assert_eq!(n, 0);
+
+		std::fs::remove_dir_all(&tmp).ok();
+	}
+
+	#[test]
+	fn chunked_file_read_at_past_eof() {
+		let tmp = std::env::temp_dir().join(format!("cvmfs_test_eof_{}", std::process::id()));
+		std::fs::create_dir_all(&tmp).unwrap();
+		let cache_dir = tmp.to_str().unwrap();
+		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
+		let cf = ChunkedFile::new(vec![], 1000, fetcher);
+
+		let mut buf = [0u8; 16];
+		let n = cf.read_at(1000, &mut buf).unwrap();
+		assert_eq!(n, 0);
+
+		std::fs::remove_dir_all(&tmp).ok();
+	}
+
+	#[test]
+	fn chunked_file_find_chunk_binary_search() {
+		let tmp = std::env::temp_dir().join(format!("cvmfs_test_binsearch_{}", std::process::id()));
+		std::fs::create_dir_all(&tmp).unwrap();
+		let cache_dir = tmp.to_str().unwrap();
+		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
+
+		use crate::directory_entry::ContentHashTypes;
+		let chunks = vec![
+			(
+				"chunk0".into(),
+				Chunk {
+					content_hash: "a".into(),
+					content_hash_type: ContentHashTypes::Sha1,
+					size: 100,
+					offset: 0,
+				},
+			),
+			(
+				"chunk1".into(),
+				Chunk {
+					content_hash: "b".into(),
+					content_hash_type: ContentHashTypes::Sha1,
+					size: 100,
+					offset: 100,
+				},
+			),
+			(
+				"chunk2".into(),
+				Chunk {
+					content_hash: "c".into(),
+					content_hash_type: ContentHashTypes::Sha1,
+					size: 100,
+					offset: 200,
+				},
+			),
+		];
+		let cf = ChunkedFile::new(chunks, 300, fetcher);
+
+		assert_eq!(cf.find_chunk_index(0), Some(0));
+		assert_eq!(cf.find_chunk_index(99), Some(0));
+		assert_eq!(cf.find_chunk_index(100), Some(1));
+		assert_eq!(cf.find_chunk_index(200), Some(2));
+		assert_eq!(cf.find_chunk_index(299), Some(2));
+		assert_eq!(cf.find_chunk_index(300), None);
+
+		std::fs::remove_dir_all(&tmp).ok();
+	}
+
+	#[test]
+	fn chunked_file_file_size() {
+		let tmp = std::env::temp_dir().join(format!("cvmfs_test_size_{}", std::process::id()));
+		std::fs::create_dir_all(&tmp).unwrap();
+		let cache_dir = tmp.to_str().unwrap();
+		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
+		let cf = ChunkedFile::new(vec![], 42, fetcher);
+
+		assert_eq!(cf.file_size(), 42);
 
 		std::fs::remove_dir_all(&tmp).ok();
 	}

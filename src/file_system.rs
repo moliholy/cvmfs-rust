@@ -1,7 +1,6 @@
 use std::{
 	collections::HashMap,
 	ffi::{OsStr, OsString},
-	io::{Read, Seek, SeekFrom},
 	path::Path,
 	sync::{
 		RwLock,
@@ -247,27 +246,20 @@ impl FilesystemMT for CernvmFileSystem {
 			None => return callback(Err(libc::ENOENT)),
 		};
 		log::info!("Reading file: {path}");
-		let mut opened_files = match self.opened_files.write() {
+		let opened_files = match self.opened_files.read() {
 			Ok(guard) => guard,
 			Err(e) => {
 				log::error!("{:?}", e);
 				return callback(Err(libc::EIO));
 			}
 		};
-		let file = match opened_files.get_mut(path) {
+		let file = match opened_files.get(path) {
 			Some(f) => f,
 			None => return callback(Err(libc::ENOENT)),
 		};
 
 		let mut data = vec![0u8; size as usize];
-		if let Err(e) = file.seek(SeekFrom::Start(offset)) {
-			log::error!("{:?}", e);
-			return callback(Err(match e.raw_os_error() {
-				Some(code) => code,
-				None => libc::EIO,
-			}));
-		}
-		let bytes_read = match file.read(&mut data) {
+		let bytes_read = match file.read_at(offset, &mut data) {
 			Ok(n) => n,
 			Err(e) => {
 				log::error!("{:?}", e);

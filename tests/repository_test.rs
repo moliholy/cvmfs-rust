@@ -1,9 +1,4 @@
-use std::{
-	ffi::OsStr,
-	fs,
-	io::{Read, Seek, SeekFrom},
-	path::Path,
-};
+use std::{ffi::OsStr, fs, path::Path};
 
 use cvmfs::{
 	common::CvmfsResult, fetcher::Fetcher, file_system::CernvmFileSystem, repository::Repository,
@@ -353,10 +348,11 @@ fn test_lookup_nonexistent() {
 #[serial]
 fn test_get_file_regular() -> CvmfsResult<()> {
 	let mut repo = create_repo();
-	let mut file = repo.get_file("/testfile")?;
-	let mut contents = String::new();
-	file.read_to_string(&mut contents)?;
-	assert_eq!(contents.len(), 50);
+	let file = repo.get_file("/testfile")?;
+	let mut buf = vec![0u8; file.file_size() as usize];
+	let n = file.read_at(0, &mut buf)?;
+	let contents = String::from_utf8_lossy(&buf[..n]);
+	assert_eq!(n, 50);
 	assert!(contents.contains("slc4_ia32_gcc34"));
 	Ok(())
 }
@@ -365,9 +361,9 @@ fn test_get_file_regular() -> CvmfsResult<()> {
 #[serial]
 fn test_get_file_binary() -> CvmfsResult<()> {
 	let mut repo = create_repo();
-	let mut file = repo.get_file("/pacman-latest.tar.gz")?;
+	let file = repo.get_file("/pacman-latest.tar.gz")?;
 	let mut header = [0u8; 2];
-	file.read_exact(&mut header)?;
+	file.read_at(0, &mut header)?;
 	assert_eq!(header, [0x1f, 0x8b]); // gzip magic
 	Ok(())
 }
@@ -394,9 +390,9 @@ fn test_get_file_nonexistent() {
 #[serial]
 fn test_chunked_file_read_first_bytes() -> CvmfsResult<()> {
 	let mut repo = create_repo();
-	let mut file = repo.get_file("/database/offlinedb.db")?;
+	let file = repo.get_file("/database/offlinedb.db")?;
 	let mut header = [0u8; 16];
-	file.read_exact(&mut header)?;
+	file.read_at(0, &mut header)?;
 	assert_eq!(&header[..6], b"SQLite");
 	Ok(())
 }
@@ -405,12 +401,11 @@ fn test_chunked_file_read_first_bytes() -> CvmfsResult<()> {
 #[serial]
 fn test_chunked_file_seek_and_read() -> CvmfsResult<()> {
 	let mut repo = create_repo();
-	let mut file = repo.get_file("/database/offlinedb.db")?;
+	let file = repo.get_file("/database/offlinedb.db")?;
 	let mut buf1 = [0u8; 64];
-	file.read_exact(&mut buf1)?;
-	file.seek(SeekFrom::Start(0))?;
+	file.read_at(0, &mut buf1)?;
 	let mut buf2 = [0u8; 64];
-	file.read_exact(&mut buf2)?;
+	file.read_at(0, &mut buf2)?;
 	assert_eq!(buf1, buf2);
 	Ok(())
 }
@@ -423,11 +418,10 @@ fn test_chunked_file_cross_chunk_read() -> CvmfsResult<()> {
 	assert!(entry.has_chunks());
 	assert!(!entry.chunks.is_empty());
 	let first_chunk_size = entry.chunks[0].size as u64;
-	let mut file = repo.get_file("/database/offlinedb.db")?;
+	let file = repo.get_file("/database/offlinedb.db")?;
 	let offset = first_chunk_size - 32;
-	file.seek(SeekFrom::Start(offset))?;
 	let mut buf = [0u8; 64];
-	let n = file.read(&mut buf)?;
+	let n = file.read_at(offset, &mut buf)?;
 	assert_eq!(n, 64);
 	Ok(())
 }
