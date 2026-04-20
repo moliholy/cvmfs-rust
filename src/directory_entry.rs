@@ -116,6 +116,8 @@ pub enum Flags {
 	NestedCatalogRoot = 32,
 	/// Entry represents a chunk of a large file (value: 64).
 	FileChunk = 64,
+	/// Entry content is stored externally, outside the CAS (value: 2048).
+	ExternalFile = 2048,
 	/// Bitmask for content hash type (values: 256 + 512 + 1024).
 	ContentHashTypes = 256 + 512 + 1024,
 }
@@ -394,6 +396,10 @@ impl DirectoryEntry {
 	/// Returns `true` if this entry is a symbolic link, `false` otherwise.
 	pub fn is_symlink(&self) -> bool {
 		self.flags & Flags::Link > 0
+	}
+
+	pub fn is_external_file(&self) -> bool {
+		self.flags & Flags::ExternalFile > 0
 	}
 
 	/// Returns a PathHash struct containing this entry's path hash components.
@@ -780,5 +786,19 @@ mod tests {
 	fn entry_xattr_none() {
 		let entry = make_entry(Flags::File as u32, Some("h".into()));
 		assert!(entry.xattr.is_none());
+	}
+
+	#[test]
+	fn entry_is_external_file() {
+		let flags = Flags::File as u32 | Flags::ExternalFile as u32;
+		let entry = make_entry(flags, Some("h".into()));
+		assert!(entry.is_external_file());
+		assert!(entry.is_file());
+	}
+
+	#[test]
+	fn entry_is_not_external_file() {
+		let entry = make_entry(Flags::File as u32, Some("h".into()));
+		assert!(!entry.is_external_file());
 	}
 }

@@ -54,8 +54,16 @@ impl Repository {
 		Ok(obj)
 	}
 
-	/// Retrieves an object from the content addressable storage
-	pub fn retrieve_object(&self, dirent: &DirectoryEntry) -> CvmfsResult<Box<dyn FileLike>> {
+	/// Retrieves an object from the content addressable storage or external source
+	pub fn retrieve_object(
+		&self,
+		dirent: &DirectoryEntry,
+		path: &str,
+	) -> CvmfsResult<Box<dyn FileLike>> {
+		if dirent.is_external_file() {
+			let external_path = self.fetcher.retrieve_raw_file(path)?;
+			return Ok(Box::new(File::open(external_path)?));
+		}
 		if dirent.has_chunks() {
 			let chunks: CvmfsResult<Vec<(String, Chunk)>> = dirent
 				.chunks
@@ -263,7 +271,7 @@ impl Repository {
 		if !directory_entry.is_file() {
 			return Err(CvmfsError::NotAFile);
 		}
-		self.retrieve_object(&directory_entry)
+		self.retrieve_object(&directory_entry, path)
 	}
 
 	/// List all the entries in a directory
