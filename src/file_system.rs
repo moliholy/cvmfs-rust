@@ -396,6 +396,17 @@ impl FilesystemMT for CernvmFileSystem {
 		}
 		match repo.list_directory(path) {
 			Ok(entries) => {
+				drop(repo);
+				if let Ok(mut cache) = self.lookup_cache.write() {
+					for entry in &entries {
+						let child_path = if path == "/" {
+							format!("/{}", entry.name)
+						} else {
+							format!("{}/{}", path, entry.name)
+						};
+						cache.insert(child_path, entry.clone());
+					}
+				}
 				let fuse_entries: Vec<FuseDirectoryEntry> = entries
 					.into_iter()
 					.map(|dirent| FuseDirectoryEntry {
@@ -403,7 +414,6 @@ impl FilesystemMT for CernvmFileSystem {
 						name: OsString::from(dirent.name),
 					})
 					.collect();
-				drop(repo);
 				if let Ok(mut cache) = self.readdir_cache.write() {
 					cache.insert(path.into(), fuse_entries.clone());
 				}
