@@ -67,7 +67,7 @@ fi
 echo "  OK: $CPP_MOUNT"
 
 echo "Warming up..."
-for p in / /testfile /database /pacman-3.29 /pacman-3.29/setup.csh /slc4_ia32_gcc34 /database/offlinedb.db /pacman-latest.tar.gz; do
+for p in / /testfile /database /pacman-3.29 /pacman-3.29/setup.csh /slc4_ia32_gcc34 /database/run.db /pacman-latest.tar.gz; do
     stat "${RUST_MOUNT}${p}" &>/dev/null || true
     stat "${CPP_MOUNT}${p}" &>/dev/null || true
 done
@@ -238,9 +238,9 @@ run_bench "md5 /testfile" \
 ITERATIONS=1
 
 print_section "full file read"
-run_bench "cat offlinedb.db (chunked, full)" \
-    "cat $RUST_MOUNT/database/offlinedb.db" \
-    "cat $CPP_MOUNT/database/offlinedb.db"
+run_bench "cat run.db (chunked, 410MB)" \
+    "cat $RUST_MOUNT/database/run.db" \
+    "cat $CPP_MOUNT/database/run.db"
 run_bench "cat pacman-latest.tar.gz (full)" \
     "cat $RUST_MOUNT/pacman-latest.tar.gz" \
     "cat $CPP_MOUNT/pacman-latest.tar.gz"
@@ -259,9 +259,9 @@ run_bench "du -s / (full tree)" \
     "du -s $CPP_MOUNT"
 
 print_section "hash large files"
-run_bench "md5 offlinedb.db (chunked)" \
-    "md5 -q $RUST_MOUNT/database/offlinedb.db" \
-    "md5 -q $CPP_MOUNT/database/offlinedb.db"
+run_bench "md5 run.db (chunked, 410MB)" \
+    "md5 -q $RUST_MOUNT/database/run.db" \
+    "md5 -q $CPP_MOUNT/database/run.db"
 run_bench "md5 pacman-latest.tar.gz" \
     "md5 -q $RUST_MOUNT/pacman-latest.tar.gz" \
     "md5 -q $CPP_MOUNT/pacman-latest.tar.gz"
