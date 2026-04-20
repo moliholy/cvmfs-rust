@@ -1,6 +1,6 @@
 # cvmfs-rust
 
-[![Rust](https://github.com/Moliholy/cvmfs-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/Moliholy/cvmfs-rust/actions/workflows/rust.yml)
+[![Rust](https://github.com/moliholy/cvmfs-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/moliholy/cvmfs-rust/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/moliholy/cvmfs-rust/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-rust)
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
 
@@ -37,7 +37,7 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 ### Build
 
 ```bash
-git clone https://github.com/Moliholy/cvmfs-rust.git
+git clone https://github.com/moliholy/cvmfs-rust.git
 cd cvmfs-rust
 cargo build --release
 ```
