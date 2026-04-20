@@ -70,12 +70,13 @@ impl Read for ChunkedFile {
             .chunks
             .iter()
             .position(|(_, chunk)| {
-                chunk.offset >= self.position && chunk.offset + chunk.size < self.position
+                self.position >= chunk.offset && self.position < chunk.offset + chunk.size
             })
-            .unwrap_or_else(|| usize::MAX);
+            .unwrap_or(usize::MAX);
         while currently_read < buf.len() && index < self.chunks.len() {
             let (path, chunk) = &self.chunks[index];
             let chunk_position = self.position - chunk.offset;
+            let remaining_in_chunk = chunk.size.saturating_sub(chunk_position);
             let local_path = self
                 .fetcher
                 .retrieve_file(path.as_str())
@@ -83,9 +84,13 @@ impl Read for ChunkedFile {
             let mut file = File::open(local_path).map_err(|_| ErrorKind::NotFound)?;
             file.seek(SeekFrom::Start(chunk_position))
                 .map_err(|_| ErrorKind::NotSeekable)?;
+            let max_to_read =
+                (buf.len() - currently_read).min(remaining_in_chunk as usize);
             let mut chunk_bytes_read = 0;
-            while chunk_bytes_read < buf.len() {
-                let bytes_read = file.read(buf)?;
+            while chunk_bytes_read < max_to_read {
+                let end = currently_read + max_to_read.min(chunk_bytes_read + buf.len());
+                let bytes_read =
+                    file.read(&mut buf[currently_read + chunk_bytes_read..end])?;
                 if bytes_read == 0 {
                     break;
                 }
