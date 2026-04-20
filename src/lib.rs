@@ -6,6 +6,7 @@ pub mod database_object;
 pub mod directory_entry;
 pub mod fetcher;
 pub mod file_system;
+pub mod geo;
 pub mod history;
 pub mod manifest;
 pub mod reflog;

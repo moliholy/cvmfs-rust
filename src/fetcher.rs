@@ -31,6 +31,7 @@ use reqwest::blocking::Client;
 use crate::{
 	cache::Cache,
 	common::{CvmfsError, CvmfsResult},
+	geo::sort_servers_by_geo,
 };
 
 const MAX_DOWNLOAD_SIZE: u64 = 1024 * 1024 * 1024;
@@ -88,6 +89,18 @@ impl Fetcher {
 			fetcher.mirrors.push(url);
 		}
 		Ok(fetcher)
+	}
+
+	pub fn sort_mirrors_by_geo(&mut self, repo_name: &str) {
+		let mut all = vec![self.source.clone()];
+		all.extend(self.mirrors.clone());
+		if let Ok(sorted) = sort_servers_by_geo(&self.source, repo_name, &all) {
+			let Some((first, rest)) = sorted.split_first() else {
+				return;
+			};
+			self.source = first.clone();
+			self.mirrors = rest.to_vec();
+		}
 	}
 
 	/// Method to retrieve a file from the cache if exists, or from
