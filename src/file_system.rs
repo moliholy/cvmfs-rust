@@ -484,8 +484,23 @@ impl FilesystemMT for CernvmFileSystem {
 	///
 	/// Returns a `ResultXattr` containing the attribute value, or an error code
 	/// if the operation failed.
-	fn getxattr(&self, _req: RequestInfo, _path: &Path, _name: &OsStr, _size: u32) -> ResultXattr {
-		Err(libc::ENODATA)
+	fn getxattr(&self, _req: RequestInfo, _path: &Path, name: &OsStr, size: u32) -> ResultXattr {
+		let name = name.to_str().ok_or(libc::ENODATA)?;
+		let repo = self.repository.read().map_err(|_| libc::EIO)?;
+		let value = match name {
+			"user.fqrn" => repo.fqrn.clone(),
+			"user.revision" => repo.manifest.revision.to_string(),
+			"user.hash" => repo.manifest.root_catalog.clone(),
+			"user.host" => repo.fetcher_source(),
+			"user.expires" => repo.manifest.last_modified.to_rfc3339(),
+			"user.nclg" => repo.opened_catalogs.len().to_string(),
+			_ => return Err(libc::ENODATA),
+		};
+		let bytes = value.into_bytes();
+		if size == 0 {
+			return Ok(fuse_mt::Xattr::Size(bytes.len() as u32));
+		}
+		Ok(fuse_mt::Xattr::Data(bytes))
 	}
 
 	/// Checks access permissions for a file or directory.

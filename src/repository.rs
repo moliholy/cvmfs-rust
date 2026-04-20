@@ -285,6 +285,10 @@ impl Repository {
 		best_fit.list_directory(path)
 	}
 
+	pub fn fetcher_source(&self) -> String {
+		self.fetcher.source.clone()
+	}
+
 	pub fn get_statistics(&mut self) -> CvmfsResult<Statistics> {
 		self.retrieve_current_root_catalog()?.get_statistics()
 	}
