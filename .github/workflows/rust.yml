@@ -11,13 +11,15 @@ env:
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
 
     steps:
     - uses: actions/checkout@v4
+    - uses: Swatinem/rust-cache@v2
     - name: Format
       run: cargo fmt --check --all
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
     - name: Install FUSE dependencies
       run: |
         sudo apt-get update
