@@ -94,48 +94,48 @@ LIMIT 1";
 /// navigation points in the repository history.
 #[derive(Debug, Clone)]
 pub struct RevisionTag {
-    /// The unique name of this tag (e.g., "production", "testing").
-    pub name: String,
-    /// The content hash this tag points to, identifying the exact repository state.
-    pub hash: String,
-    /// The numeric revision identifier for this tag.
-    pub revision: i32,
-    /// Unix timestamp (seconds since epoch) when this tag was created.
-    pub timestamp: i64,
-    /// Channel identifier for this tag (used for categorizing tags).
-    pub channel: i32,
-    /// Human-readable description of this tag's purpose or contents.
-    pub description: String,
+	/// The unique name of this tag (e.g., "production", "testing").
+	pub name: String,
+	/// The content hash this tag points to, identifying the exact repository state.
+	pub hash: String,
+	/// The numeric revision identifier for this tag.
+	pub revision: i32,
+	/// Unix timestamp (seconds since epoch) when this tag was created.
+	pub timestamp: i64,
+	/// Channel identifier for this tag (used for categorizing tags).
+	pub channel: i32,
+	/// Human-readable description of this tag's purpose or contents.
+	pub description: String,
 }
 
 impl RevisionTag {
-    /// Creates a new RevisionTag from a database row.
-    ///
-    /// This constructor extracts tag information from a database row and creates
-    /// a new RevisionTag instance. It assumes the row contains columns in the same
-    /// order as specified in the SQL queries defined in this module.
-    ///
-    /// # Arguments
-    ///
-    /// * `row` - A database row containing tag information.
-    ///
-    /// # Returns
-    ///
-    /// Returns a `CvmfsResult<Self>` containing the new RevisionTag if successful,
-    /// or an error if the row data cannot be parsed.
-    ///
-    /// # Errors
-    ///
-    /// This function will return a database error if any column cannot be extracted
-    /// from the row due to type mismatch or missing data.
-    pub fn new(row: &Row) -> CvmfsResult<Self> {
-        Ok(Self {
-            name: row.get(0)?,
-            hash: row.get(1)?,
-            revision: row.get(2)?,
-            timestamp: row.get(3)?,
-            channel: row.get(4)?,
-            description: row.get(5)?,
-        })
-    }
+	/// Creates a new RevisionTag from a database row.
+	///
+	/// This constructor extracts tag information from a database row and creates
+	/// a new RevisionTag instance. It assumes the row contains columns in the same
+	/// order as specified in the SQL queries defined in this module.
+	///
+	/// # Arguments
+	///
+	/// * `row` - A database row containing tag information.
+	///
+	/// # Returns
+	///
+	/// Returns a `CvmfsResult<Self>` containing the new RevisionTag if successful,
+	/// or an error if the row data cannot be parsed.
+	///
+	/// # Errors
+	///
+	/// This function will return a database error if any column cannot be extracted
+	/// from the row due to type mismatch or missing data.
+	pub fn new(row: &Row) -> CvmfsResult<Self> {
+		Ok(Self {
+			name: row.get(0)?,
+			hash: row.get(1)?,
+			revision: row.get(2)?,
+			timestamp: row.get(3)?,
+			channel: row.get(4)?,
+			description: row.get(5)?,
+		})
+	}
 }
