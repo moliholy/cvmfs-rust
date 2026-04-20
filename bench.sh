@@ -7,8 +7,9 @@ RUST_CACHE="/tmp/bench_rust_cache"
 CPP_CACHE="/tmp/bench_cpp_cache"
 REPO_URL="http://cvmfs-stratum-one.cern.ch/opt/boss"
 REPO_FQRN="boss.cern.ch"
-RUST_BIN="./target/release/cvmfs-cli"
-ITERATIONS=50
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUST_BIN="$SCRIPT_DIR/target/release/cvmfs-cli"
+ITERATIONS=30
 
 cleanup() {
     umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
