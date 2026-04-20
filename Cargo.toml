@@ -75,3 +75,6 @@ must_use_candidate = "allow"
 doc_markdown = "allow"
 wildcard_imports = "allow"
 ref_option_ref = "allow"
+
+[dev-dependencies]
+serial_test = "3.4.0"

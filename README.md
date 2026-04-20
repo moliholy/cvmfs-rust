@@ -1,32 +1,40 @@
 # cvmfs-rust
 
-[![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
+[![Rust](https://github.com/Moliholy/cvmfs-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/Moliholy/cvmfs-rust/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/moliholy/cvmfs-rust/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-rust)
+[![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
 
-A [CernVM-FS](https://github.com/cvmfs/cvmfs) client implementation written in Rust. This project provides a
-modern, memory-safe alternative to the original C++ implementation, allowing users to mount
-remote CernVM-FS repositories as local filesystems via FUSE.
+A pure Rust implementation of the [CernVM-FS](https://cernvm.cern.ch/fs) client. Mount remote CVMFS repositories as local filesystems via FUSE, with full content verification and transparent decompression.
+
+## Why Rust?
+
+The original CernVM-FS client is written in C++. This project rewrites the client in Rust to get:
+
+- **Memory safety** without garbage collection
+- **Fearless concurrency** for multi-threaded FUSE operations
+- **Modern tooling**: cargo, clippy, built-in testing, dependency management
+- **Smaller binary**: single static binary, no shared library dependencies beyond FUSE
 
 ## Features
 
-- Native Rust implementation of the CernVM-FS client
-- FUSE integration for filesystem mounting via `fuse_mt`
-- Transparent zlib decompression of repository objects
-- SHA-1 signature verification of repository root files
-- SQLite-based catalog and history database handling
-- Local caching of downloaded objects
-- Support for nested catalogs and chunked files
-- HTTP/HTTPS retrieval from Stratum-1 servers
+- FUSE filesystem mounting via `fuse_mt` (multi-threaded)
+- Transparent zlib decompression of content-addressed objects
+- RSA-PKCS1v15 signature verification of repository manifests
+- SQLite catalog traversal with nested catalog support
+- Chunked file reassembly for large files
+- Local object caching with content-addressed storage
+- HTTP/HTTPS retrieval from Stratum-1 replica servers
 
-## Prerequisites
+## Quick Start
+
+### Prerequisites
 
 - Rust (stable)
-- FUSE libraries:
-    - **macOS**: [macFUSE](https://macfuse.github.io/) (`brew install --cask macfuse`)
-    - **Linux**: `libfuse-dev` / `fuse-devel`
+- FUSE 3 libraries:
+  - **macOS**: [macFUSE](https://macfuse.github.io/) (`brew install --cask macfuse`)
+  - **Linux**: `sudo apt install libfuse3-dev` (Debian/Ubuntu) or `sudo dnf install fuse3-devel` (Fedora)
 
-## Installation
+### Build
 
 ```bash
 git clone https://github.com/Moliholy/cvmfs-rust.git
@@ -34,58 +42,75 @@ cd cvmfs-rust
 cargo build --release
 ```
 
-The binary is located at `target/release/cvmfs-cli`.
-
-## Usage
-
-```bash
-cvmfs-cli <repository_url> <mount_point> [cache_directory]
-```
-
-### Example
+### Mount a Repository
 
 ```bash
 mkdir -p /tmp/cvmfs_mount
-cvmfs-cli http://cvmfs-stratum-one.cern.ch/opt/boss /tmp/cvmfs_mount /tmp/cvmfs_cache
+./target/release/cvmfs-cli http://cvmfs-stratum-one.cern.ch/opt/boss /tmp/cvmfs_mount
 ```
 
-### Arguments
-
-| Argument          | Required | Description                                          |
-|-------------------|----------|------------------------------------------------------|
-| `repository_url`  | Yes      | URL of the CernVM-FS repository                      |
-| `mount_point`     | Yes      | Local directory to mount (must exist)                |
-| `cache_directory` | No       | Directory for cached data (defaults to `/tmp/cvmfs`) |
-
-### Unmounting
+Then browse `/tmp/cvmfs_mount` like any local directory. Unmount with:
 
 ```bash
 # macOS
 umount /tmp/cvmfs_mount
+
 # Linux
 fusermount -u /tmp/cvmfs_mount
 ```
 
-### Logging
+### CLI Reference
 
-Enable logging with the `RUST_LOG` environment variable:
+```
+cvmfs-cli <repository_url> <mount_point> [cache_directory]
+```
+
+| Argument          | Required | Default        | Description                     |
+|-------------------|----------|----------------|---------------------------------|
+| `repository_url`  | Yes      |                | URL of the CernVM-FS repository |
+| `mount_point`     | Yes      |                | Local directory to mount        |
+| `cache_directory` | No       | `/tmp/cvmfs`   | Directory for cached objects    |
+
+### Logging
 
 ```bash
 RUST_LOG=info cvmfs-cli http://cvmfs-stratum-one.cern.ch/opt/boss /tmp/cvmfs_mount
 ```
 
+## Library Usage
+
+`cvmfs-rust` exposes a library crate for programmatic access:
+
+```rust
+use cvmfs::{fetcher::Fetcher, repository::Repository};
+
+let fetcher = Fetcher::new("http://cvmfs-stratum-one.cern.ch/opt/boss", "/tmp/cache", true)?;
+let mut repo = Repository::new(fetcher)?;
+
+// List root directory
+for entry in repo.list_directory("/")? {
+    println!("{} ({})", entry.name, if entry.is_directory() { "dir" } else { "file" });
+}
+
+// Read a file
+let mut file = repo.get_file("/testfile")?;
+let mut contents = String::new();
+file.read_to_string(&mut contents)?;
+```
+
 ## Development
 
 ```bash
-cargo test
+cargo test --workspace -- --test-threads=1
 cargo clippy --workspace --all-targets -- -D warnings
 cargo +nightly fmt --all
 ```
 
 ## License
 
-This project is licensed under the BSD 3-Clause License. See the [LICENSE](LICENSE) file for details.
+BSD 3-Clause. See [LICENSE](LICENSE).
 
 ## Acknowledgments
 
-- The original [CernVM-FS project](https://github.com/cvmfs/cvmfs)
+- [CernVM-FS](https://github.com/cvmfs/cvmfs) (the original C++ implementation)
+- [CERN](https://home.cern/) for maintaining public Stratum-1 servers
