@@ -49,8 +49,10 @@ pub enum ContentHashTypes {
 	Sha1 = 1,
 	/// RIPEMD-160 hash algorithm (value: 2).
 	Ripemd160 = 2,
-	/// Upper boundary marker for hash types (value: 3)
-	UpperBound = 3,
+	/// SHA-256 hash algorithm (value: 3).
+	Sha256 = 3,
+	/// SHAKE-128 hash algorithm with 160-bit output (value: 4).
+	Shake128 = 4,
 }
 
 impl ContentHashTypes {
@@ -71,6 +73,8 @@ impl ContentHashTypes {
 	pub fn hash_suffix(obj: &Self) -> String {
 		match obj {
 			ContentHashTypes::Ripemd160 => "-rmd160".into(),
+			ContentHashTypes::Sha256 => "-sha256".into(),
+			ContentHashTypes::Shake128 => "-shake128".into(),
 			_ => "".into(),
 		}
 	}
@@ -81,7 +85,8 @@ impl From<u32> for ContentHashTypes {
 		match value {
 			1 => ContentHashTypes::Sha1,
 			2 => ContentHashTypes::Ripemd160,
-			3 => ContentHashTypes::UpperBound,
+			3 => ContentHashTypes::Sha256,
+			4 => ContentHashTypes::Shake128,
 			_ => ContentHashTypes::Unknown,
 		}
 	}
@@ -520,8 +525,13 @@ mod tests {
 	}
 
 	#[test]
-	fn hash_suffix_upper_bound_is_empty() {
-		assert_eq!(ContentHashTypes::hash_suffix(&ContentHashTypes::UpperBound), "");
+	fn hash_suffix_sha256() {
+		assert_eq!(ContentHashTypes::hash_suffix(&ContentHashTypes::Sha256), "-sha256");
+	}
+
+	#[test]
+	fn hash_suffix_shake128() {
+		assert_eq!(ContentHashTypes::hash_suffix(&ContentHashTypes::Shake128), "-shake128");
 	}
 
 	#[test]
@@ -537,9 +547,15 @@ mod tests {
 	}
 
 	#[test]
-	fn content_hash_types_from_3_is_upper_bound() {
+	fn content_hash_types_from_3_is_sha256() {
 		let t: ContentHashTypes = 3u32.into();
-		assert!(matches!(t, ContentHashTypes::UpperBound));
+		assert!(matches!(t, ContentHashTypes::Sha256));
+	}
+
+	#[test]
+	fn content_hash_types_from_4_is_shake128() {
+		let t: ContentHashTypes = 4u32.into();
+		assert!(matches!(t, ContentHashTypes::Shake128));
 	}
 
 	#[test]
@@ -709,10 +725,17 @@ mod tests {
 	}
 
 	#[test]
-	fn read_content_hash_type_upper_bound_from_512() {
-		// 512 >> 8 = 2, +1 = 3 => UpperBound
+	fn read_content_hash_type_sha256_from_512() {
+		// 512 >> 8 = 2, +1 = 3 => Sha256
 		let t = DirectoryEntry::read_content_hash_type(512);
-		assert!(matches!(t, ContentHashTypes::UpperBound));
+		assert!(matches!(t, ContentHashTypes::Sha256));
+	}
+
+	#[test]
+	fn read_content_hash_type_shake128_from_768() {
+		// 768 >> 8 = 3, +1 = 4 => Shake128
+		let t = DirectoryEntry::read_content_hash_type(768);
+		assert!(matches!(t, ContentHashTypes::Shake128));
 	}
 
 	#[test]
