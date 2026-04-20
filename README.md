@@ -1,7 +1,7 @@
 # cvmfs-rust
 
 [![Rust](https://img.shields.io/badge/rust-1.87.0%2B-orange.svg)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
 
 A [CernVM-FS](https://github.com/cvmfs/cvmfs) client implementation written in Rust. This project aims to provide a
 modern, secure, and performant alternative to the original C++ implementation.
@@ -46,26 +46,18 @@ cvmfs-cli mount repo.example.org /cvmfs/repo.example.org
 fusermount -u /cvmfs/repo.example.org
 ```
 
-## Configuration
-
-Configuration can be provided via a TOML file:
-
-```bash
-cvmfs-rust --config /etc/cvmfs-rust/config.toml mount repo.example.org /cvmfs/repo.example.org
-```
-
 ## Development
 
 ### Dependencies
 
 This project uses the following key dependencies:
 
-- sha1 (0.10.5) - SHA-1 hashing.
-- log (0.4.22) - Logging infrastructure.
-- fuse_mt (0.6.0) - FUSE filesystem integration.
-- rusqlite (0.32.1) - SQLite bindings.
-- x509-certificate (0.24.0) - Certificate handling.
-- reqwest (0.12.9) - HTTP client.
+- sha1 (0.10) - SHA-1 hashing.
+- log (0.4) - Logging infrastructure.
+- fuse_mt (0.6) - FUSE filesystem integration.
+- rusqlite (0.37+) - SQLite bindings.
+- x509-certificate (0.24+) - Certificate handling.
+- reqwest (0.12+) - HTTP client.
 
 ### Running Tests
 
@@ -75,7 +67,7 @@ cargo test
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the BSD 3-Clause License. See the [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
