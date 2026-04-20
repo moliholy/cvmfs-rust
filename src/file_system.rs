@@ -24,6 +24,8 @@ use crate::{
 	repository::Repository,
 };
 
+const FOPEN_KEEP_CACHE: u32 = 0x02;
+
 /// Time-to-live duration for file attributes in the FUSE interface.
 ///
 /// This constant defines how long the operating system should cache file attributes
@@ -211,7 +213,7 @@ impl FilesystemMT for CernvmFileSystem {
 			.write()
 			.map_err(|_| CvmfsError::Sync)?
 			.insert(path.into(), file);
-		Ok((fd, 0))
+		Ok((fd, FOPEN_KEEP_CACHE))
 	}
 
 	/// Reads data from an open file.
