@@ -9,7 +9,7 @@ REPO_URL="http://cvmfs-stratum-one.cern.ch/opt/boss"
 REPO_FQRN="boss.cern.ch"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_BIN="$SCRIPT_DIR/target/release/cvmfs-cli"
-ITERATIONS=30
+ITERATIONS=50
 
 cleanup() {
     umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
@@ -234,21 +234,12 @@ run_bench "md5 /testfile" \
     "md5 -q $RUST_MOUNT/testfile" \
     "md5 -q $CPP_MOUNT/testfile"
 
-# ── Heavy benchmarks (1 iteration, long-running operations) ──
-ITERATIONS=1
-
 print_section "full file read"
-run_bench "cat run.db (chunked, 410MB)" \
-    "cat $RUST_MOUNT/database/run.db" \
-    "cat $CPP_MOUNT/database/run.db"
 run_bench "cat pacman-latest.tar.gz (full)" \
     "cat $RUST_MOUNT/pacman-latest.tar.gz" \
     "cat $CPP_MOUNT/pacman-latest.tar.gz"
 
 print_section "recursive traversal"
-run_bench "find / -maxdepth 3 -type f" \
-    "find $RUST_MOUNT -maxdepth 3 -type f" \
-    "find $CPP_MOUNT -maxdepth 3 -type f"
 run_bench "find / -maxdepth 3 (all entries)" \
     "find $RUST_MOUNT -maxdepth 3" \
     "find $CPP_MOUNT -maxdepth 3"
@@ -265,6 +256,17 @@ run_bench "md5 run.db (chunked, 410MB)" \
 run_bench "md5 pacman-latest.tar.gz" \
     "md5 -q $RUST_MOUNT/pacman-latest.tar.gz" \
     "md5 -q $CPP_MOUNT/pacman-latest.tar.gz"
+
+# ── Heavy benchmarks (1 iteration, >5s operations) ──
+ITERATIONS=1
+
+print_section "heavy (1 iteration)"
+run_bench "cat run.db (chunked, 410MB)" \
+    "cat $RUST_MOUNT/database/run.db" \
+    "cat $CPP_MOUNT/database/run.db"
+run_bench "find / -maxdepth 3 -type f" \
+    "find $RUST_MOUNT -maxdepth 3 -type f" \
+    "find $CPP_MOUNT -maxdepth 3 -type f"
 
 echo ""
 printf '=%.0s' {1..87}; echo ""
