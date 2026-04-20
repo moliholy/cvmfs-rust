@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration fmt lint check clean coverage
+.PHONY: build release test test-unit test-integration fmt lint check clean coverage bench
 
 build:
 	cargo build
@@ -31,3 +31,6 @@ clean:
 
 coverage:
 	cargo llvm-cov --workspace --lib --test repository_test --lcov --output-path lcov.info
+
+bench: release
+	sudo bash bench.sh
