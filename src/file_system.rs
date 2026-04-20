@@ -31,7 +31,7 @@ use crate::{
 /// to the repository are quickly reflected in the mounted filesystem, at the cost of
 /// more frequent attribute requests. In CernVM-FS, a 1-second TTL provides a good
 /// balance between performance and freshness.
-const TTL: Duration = Duration::from_secs(1);
+const TTL: Duration = Duration::from_secs(3600);
 
 /// Maps a CernVM-FS directory entry type to a FUSE file type
 ///
@@ -93,6 +93,8 @@ pub struct CernvmFileSystem {
 	/// to the map, allowing multiple threads to safely open and close files concurrently.
 	opened_files: RwLock<HashMap<String, Box<dyn FileLike>>>,
 	cached_statfs: Mutex<Option<(Instant, Statfs)>>,
+	lookup_cache: RwLock<HashMap<String, DirectoryEntry>>,
+	readdir_cache: RwLock<HashMap<String, Vec<FuseDirectoryEntry>>>,
 }
 
 /// Implementation of the FUSE multi-threaded filesystem interface.
@@ -130,9 +132,7 @@ impl FilesystemMT for CernvmFileSystem {
 	fn getattr(&self, _req: RequestInfo, path: &Path, _fh: Option<u64>) -> ResultEntry {
 		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
 		log::info!("Getting attribute of path: {path}");
-		let mut repo =
-			self.repository.write().map_err(|e| CvmfsError::Generic(format!("{:?}", e)))?;
-		let result = repo.lookup(path)?;
+		let result = self.cached_lookup(path)?;
 		let date_time: DateTime<Utc> =
 			DateTime::from_timestamp(result.mtime, 0).ok_or(CvmfsError::InvalidTimestamp)?;
 		let time = SystemTime::from(date_time);
@@ -173,8 +173,7 @@ impl FilesystemMT for CernvmFileSystem {
 	fn readlink(&self, _req: RequestInfo, path: &Path) -> ResultData {
 		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
 		log::info!("Reading link: {path}");
-		let mut repo = self.repository.write().map_err(|_| CvmfsError::Sync)?;
-		let result = repo.lookup(path)?;
+		let result = self.cached_lookup(path)?;
 		if !result.is_symlink() {
 			return Err(libc::ENOLINK);
 		}
@@ -200,13 +199,14 @@ impl FilesystemMT for CernvmFileSystem {
 	fn open(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
 		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
 		log::info!("Opening file: {path}");
-		let mut repo = self.repository.write().map_err(|_| CvmfsError::Sync)?;
-		let result = repo.lookup(path)?;
-		if !result.is_file() {
+		let entry = self.cached_lookup(path)?;
+		if !entry.is_file() {
 			return Err(libc::ENOENT);
 		}
-		let file = repo.get_file(path)?;
+		let repo = self.repository.read().map_err(|_| CvmfsError::Sync)?;
+		let file = repo.retrieve_object(&entry, path)?;
 		let fd = file.as_raw_fd() as u64;
+		drop(repo);
 		self.opened_files
 			.write()
 			.map_err(|_| CvmfsError::Sync)?
@@ -357,14 +357,7 @@ impl FilesystemMT for CernvmFileSystem {
 	fn opendir(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
 		let path = path.to_str().ok_or(libc::ENOENT)?;
 		log::info!("Opening directory: {path}");
-		let mut repo = match self.repository.write() {
-			Ok(repo) => repo,
-			Err(e) => {
-				log::error!("{:?}", e);
-				return Err(libc::EIO);
-			}
-		};
-		let result = repo.lookup(path)?;
+		let result = self.cached_lookup(path)?;
 		if !result.is_directory() {
 			return Err(libc::ENOENT);
 		}
@@ -390,6 +383,9 @@ impl FilesystemMT for CernvmFileSystem {
 	fn readdir(&self, _req: RequestInfo, path: &Path, _fh: u64) -> ResultReaddir {
 		let path = path.to_str().ok_or(libc::ENOENT)?;
 		log::info!("Reading directory: {path}");
+		if let Some(entries) = self.readdir_cache.read().ok().and_then(|c| c.get(path).cloned()) {
+			return Ok(entries);
+		}
 		let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
 		let result = repo.lookup(path)?;
 		if !result.is_directory() {
@@ -397,13 +393,20 @@ impl FilesystemMT for CernvmFileSystem {
 			return Err(libc::ENOENT);
 		}
 		match repo.list_directory(path) {
-			Ok(entries) => Ok(entries
-				.into_iter()
-				.map(|dirent| FuseDirectoryEntry {
-					kind: map_dirent_type_to_fs_kind(&dirent),
-					name: OsString::from(dirent.name),
-				})
-				.collect()),
+			Ok(entries) => {
+				let fuse_entries: Vec<FuseDirectoryEntry> = entries
+					.into_iter()
+					.map(|dirent| FuseDirectoryEntry {
+						kind: map_dirent_type_to_fs_kind(&dirent),
+						name: OsString::from(dirent.name),
+					})
+					.collect();
+				drop(repo);
+				if let Ok(mut cache) = self.readdir_cache.write() {
+					cache.insert(path.into(), fuse_entries.clone());
+				}
+				Ok(fuse_entries)
+			}
 			Err(e) => {
 				log::error!("Could not list directory {path}: {:?}", e);
 				Err(e.into())
@@ -524,12 +527,26 @@ impl FilesystemMT for CernvmFileSystem {
 	fn access(&self, _req: RequestInfo, path: &Path, _mask: u32) -> ResultEmpty {
 		let path = path.to_str().ok_or(libc::ENOENT)?;
 		log::info!("Accessing: {path}");
-		let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
-		Ok(repo.lookup(path).map(|_| ())?)
+		self.cached_lookup(path).map(|_| ())?;
+		Ok(())
 	}
 }
 
 impl CernvmFileSystem {
+	fn cached_lookup(&self, path: &str) -> CvmfsResult<DirectoryEntry> {
+		if let Some(entry) = self.lookup_cache.read().ok().and_then(|c| c.get(path).cloned()) {
+			return Ok(entry);
+		}
+		let mut repo =
+			self.repository.write().map_err(|e| CvmfsError::Generic(format!("{:?}", e)))?;
+		let entry = repo.lookup(path)?;
+		drop(repo);
+		if let Ok(mut cache) = self.lookup_cache.write() {
+			cache.insert(path.into(), entry.clone());
+		}
+		Ok(entry)
+	}
+
 	/// Creates a new CernvmFileSystem instance.
 	///
 	/// This constructor creates a new filesystem instance that operates on the given
@@ -549,6 +566,8 @@ impl CernvmFileSystem {
 			repository: RwLock::new(repository),
 			opened_files: Default::default(),
 			cached_statfs: Mutex::new(None),
+			lookup_cache: Default::default(),
+			readdir_cache: Default::default(),
 		})
 	}
 }
