@@ -1,0 +1,2 @@
+warn-on-all-wildcard-imports = true
+max-struct-bools = 5
