@@ -186,8 +186,8 @@ run_bench "find /database -type f" \
     "find $RUST_MOUNT/database -type f" \
     "find $CPP_MOUNT/database -type f"
 run_bench "find / -maxdepth 3" \
-    "find $RUST_MOUNT -maxdepth 3" \
-    "find $CPP_MOUNT -maxdepth 3"
+    "find $RUST_MOUNT -maxdepth 3 2>/dev/null || true" \
+    "find $CPP_MOUNT -maxdepth 3 2>/dev/null || true"
 
 # ── full file read ──
 run_bench "wc -c /testfile" \
@@ -207,8 +207,8 @@ run_bench "md5 pacman-latest.tar.gz" \
 
 # ── du ──
 run_bench "du -d 2" \
-    "du -d 2 -s $RUST_MOUNT" \
-    "du -d 2 -s $CPP_MOUNT"
+    "du -d 2 -s $RUST_MOUNT 2>/dev/null || true" \
+    "du -d 2 -s $CPP_MOUNT 2>/dev/null || true"
 
 # ── heavy (fewer runs, long operations) ──
 run_bench "md5 run.db (chunked, 410MB)" \
