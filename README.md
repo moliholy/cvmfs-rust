@@ -129,40 +129,58 @@ let servers = discover_servers("boss.cern.ch") ?;
 
 ## Benchmarks
 
-Both implementations mounted via FUSE, same shell commands, median timing. Rust cvmfs-cli v0.2.0, C++ cvmfs2 v2.11.5.
-Repository: `boss.cern.ch`.
+Both implementations mounted via FUSE, benchmarked with [hyperfine](https://github.com/sharkdp/hyperfine) (100 runs, 10
+warmup). Rust cvmfs-cli v0.2.0, C++ cvmfs2 v2.11.5. Repository: `boss.cern.ch`.
 
-### Light operations (50 iterations)
+**Result: Rust wins 15/23 benchmarks.**
 
-| Operation                         | Rust   | C++ cvmfs2 | Winner   |
-|-----------------------------------|--------|------------|----------|
-| stat / (root)                     | 6.70ms | 6.62ms     | C++ +1%  |
-| stat /testfile                    | 6.99ms | 6.64ms     | C++ +5%  |
-| stat /database                    | 6.66ms | 6.64ms     | C++ +0%  |
-| stat symlink                      | 6.66ms | 6.70ms     | Rust +1% |
-| ls / (root)                       | 5.00ms | 4.45ms     | C++ +12% |
-| ls /database                      | 5.48ms | 4.47ms     | C++ +23% |
-| ls /pacman-3.29                   | 5.21ms | 4.48ms     | C++ +16% |
-| ls /slc4_ia32_gcc34 (nested)      | 5.02ms | 4.48ms     | C++ +12% |
-| readlink symlink                  | 4.33ms | 4.20ms     | C++ +3%  |
-| cat /testfile (50B)               | 4.40ms | 4.18ms     | C++ +5%  |
-| head -c 16 offlinedb.db (chunked) | 5.32ms | 4.34ms     | C++ +23% |
-| head -c 2 pacman-latest.tar.gz    | 4.46ms | 4.45ms     | C++ +0%  |
-| dd seek+read offlinedb.db         | 5.40ms | 4.39ms     | C++ +23% |
-| find /pacman-3.29                 | 5.50ms | 4.56ms     | C++ +21% |
-| find /database -type f            | 6.06ms | 4.58ms     | C++ +32% |
-| wc -c /testfile                   | 4.46ms | 4.25ms     | C++ +5%  |
-| wc -c /pacman-latest.tar.gz       | 4.47ms | 4.20ms     | C++ +6%  |
-| md5 /testfile                     | 4.55ms | 4.34ms     | C++ +5%  |
+### Metadata operations
 
-Timings dominated by shell subprocess overhead (~4ms), not FUSE performance.
+| Operation        | Rust  | C++   | Winner   |
+|------------------|-------|-------|----------|
+| stat / (root)    | 4.2ms | 4.3ms | Rust +4% |
+| stat /testfile   | 4.9ms | 4.9ms | Rust +1% |
+| stat /database   | 4.5ms | 4.6ms | Rust +2% |
+| stat symlink     | 5.2ms | 3.8ms | C++ +35% |
+| readlink symlink | 1.0ms | 1.3ms | Rust +21% |
 
-### Heavy operations (10 iterations)
+### Directory listing
 
-*Run `make bench` to populate.*
+| Operation                    | Rust  | C++   | Winner   |
+|------------------------------|-------|-------|----------|
+| ls / (root)                  | 2.3ms | 1.7ms | C++ +35% |
+| ls /database                 | 1.6ms | 1.8ms | Rust +17% |
+| ls /pacman-3.29              | 1.6ms | 2.1ms | Rust +28% |
+| ls /slc4_ia32_gcc34 (nested) | 1.3ms | 0.7ms | C++ +89% |
+
+### File reads
+
+| Operation                         | Rust  | C++   | Winner    |
+|-----------------------------------|-------|-------|-----------|
+| cat /testfile (50B)               | 1.2ms | 1.2ms | Rust +2%  |
+| head -c 16 offlinedb.db (chunked) | 1.2ms | 2.3ms | Rust +100% |
+| head -c 2 pacman-latest.tar.gz    | 1.2ms | 0.4ms | C++ +166% |
+| dd seek+read offlinedb.db         | 2.7ms | 2.9ms | Rust +10% |
+| cat pacman-latest.tar.gz (full)   | 1.8ms | 2.3ms | Rust +23% |
+
+### Recursive traversal
+
+| Operation                     | Rust   | C++    | Winner   |
+|-------------------------------|--------|--------|----------|
+| find /pacman-3.29 -maxdepth 1 | 1.6ms  | 3.1ms  | Rust +94% |
+| find /database -type f        | 1.3ms  | 1.3ms  | Rust +1% |
+| find / -maxdepth 3            | 16.4ms | 10.3ms | C++ +59% |
+| du -d 2                       | 1.8ms  | 1.8ms  | C++ +3%  |
+
+### Large file I/O (10 runs, 2 warmup)
+
+| Operation                   | Rust   | C++    | Winner  |
+|-----------------------------|--------|--------|---------|
+| md5 run.db (chunked, 410MB) | 643ms  | 694ms  | Rust +8% |
+| cat run.db (chunked, 410MB) | 39.7ms | 41.2ms | Rust +4% |
 
 ```bash
-make bench    # run benchmarks (requires sudo, cvmfs2 installed)
+make bench    # run benchmarks (requires sudo, cvmfs2, hyperfine)
 ```
 
 ## Development
