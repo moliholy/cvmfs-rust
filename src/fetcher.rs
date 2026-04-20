@@ -122,13 +122,10 @@ impl Fetcher {
                 file_url
             )));
         }
-        if let Some(len) = response.content_length() {
-            if len > MAX_DOWNLOAD_SIZE {
-                return Err(CvmfsError::IO(format!(
-                    "response too large: {} bytes",
-                    len
-                )));
-            }
+        if let Some(len) = response.content_length().filter(|&l| l > MAX_DOWNLOAD_SIZE) {
+            return Err(CvmfsError::IO(format!(
+                "response too large: {len} bytes"
+            )));
         }
         Ok(response.bytes()?.to_vec())
     }
