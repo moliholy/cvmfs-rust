@@ -3,10 +3,10 @@ use std::{
 	ffi::{OsStr, OsString},
 	path::Path,
 	sync::{
-		RwLock,
+		Mutex, RwLock,
 		atomic::{AtomicU64, Ordering},
 	},
-	time::{Duration, SystemTime},
+	time::{Duration, Instant, SystemTime},
 };
 
 use chrono::{DateTime, Utc};
@@ -92,6 +92,7 @@ pub struct CernvmFileSystem {
 	/// retrieved for subsequent read operations. The `RwLock` ensures thread-safe access
 	/// to the map, allowing multiple threads to safely open and close files concurrently.
 	opened_files: RwLock<HashMap<String, Box<dyn FileLike>>>,
+	cached_statfs: Mutex<Option<(Instant, Statfs)>>,
 }
 
 /// Implementation of the FUSE multi-threaded filesystem interface.
@@ -445,10 +446,16 @@ impl FilesystemMT for CernvmFileSystem {
 	/// Returns a `ResultStatfs` containing filesystem statistics, or an error code
 	/// if the operation failed.
 	fn statfs(&self, _req: RequestInfo, _path: &Path) -> ResultStatfs {
-		log::info!("Getting FS statistics");
+		if let Some((ts, cached)) = *self.cached_statfs.lock().map_err(|_| libc::EIO)? {
+			#[allow(clippy::collapsible_if)]
+			if ts.elapsed() < Duration::from_secs(5) {
+				return Ok(cached);
+			}
+		}
+		log::info!("Refreshing FS statistics");
 		let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
 		let statistics = repo.get_statistics()?;
-		Ok(Statfs {
+		let result = Statfs {
 			blocks: 1 + statistics.file_size as u64 / 512,
 			bfree: 0,
 			bavail: 0,
@@ -457,7 +464,12 @@ impl FilesystemMT for CernvmFileSystem {
 			bsize: 512,
 			namelen: 255,
 			frsize: 512,
-		})
+		};
+		drop(repo);
+		if let Ok(mut cache) = self.cached_statfs.lock() {
+			*cache = Some((Instant::now(), result));
+		}
+		Ok(result)
 	}
 
 	/// Retrieves an extended attribute for a file or directory.
@@ -533,6 +545,10 @@ impl CernvmFileSystem {
 	/// Returns a `CvmfsResult<Self>` containing the new filesystem instance, or an error
 	/// if initialization failed.
 	pub fn new(repository: Repository) -> CvmfsResult<Self> {
-		Ok(Self { repository: RwLock::new(repository), opened_files: Default::default() })
+		Ok(Self {
+			repository: RwLock::new(repository),
+			opened_files: Default::default(),
+			cached_statfs: Mutex::new(None),
+		})
 	}
 }

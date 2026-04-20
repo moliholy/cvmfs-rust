@@ -49,7 +49,7 @@ pub trait FileLike: Debug + AsRawFd + Send + Sync {
 
 impl FileLike for RegularFile {
 	fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-		let mut file = &self.inner;
+		let mut file = self.inner.lock().map_err(|_| ErrorKind::Other)?;
 		file.seek(SeekFrom::Start(offset))?;
 		file.read(buf)
 	}
@@ -61,7 +61,7 @@ impl FileLike for RegularFile {
 
 #[derive(Debug)]
 pub struct RegularFile {
-	inner: File,
+	inner: Mutex<File>,
 	size: u64,
 }
 
@@ -69,13 +69,13 @@ impl RegularFile {
 	pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
 		let file = File::open(path.as_ref())?;
 		let size = file.metadata()?.len();
-		Ok(Self { inner: file, size })
+		Ok(Self { inner: Mutex::new(file), size })
 	}
 }
 
 impl AsRawFd for RegularFile {
 	fn as_raw_fd(&self) -> RawFd {
-		self.inner.as_raw_fd()
+		self.inner.lock().map(|f| f.as_raw_fd()).unwrap_or(-1)
 	}
 }
 
