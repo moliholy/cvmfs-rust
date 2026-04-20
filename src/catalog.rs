@@ -42,7 +42,7 @@ pub const CATALOG_ROOT_PREFIX: &str = "C";
 /// This query retrieves all entries in a directory, identified by the MD5 hash
 /// of the parent directory path (split into two 64-bit components).
 const LISTING_QUERY: &str = "\
-SELECT md5path_1, md5path_2, parent_1, parent_2, hash, flags, size, mode, mtime, name, symlink \
+SELECT md5path_1, md5path_2, parent_1, parent_2, hash, flags, size, mode, mtime, name, symlink, uid, gid, hardlinks, xattr \
 FROM catalog \
 WHERE parent_1 = ? AND parent_2 = ? \
 ORDER BY name ASC";
@@ -66,7 +66,7 @@ ORDER BY offset ASC";
 ///
 /// This query retrieves a single entry that matches the specified MD5 path hash
 /// (split into two 64-bit components).
-const FIND_MD5_PATH: &str = "SELECT md5path_1, md5path_2, parent_1, parent_2, hash, flags, size, mode, mtime, name, symlink \
+const FIND_MD5_PATH: &str = "SELECT md5path_1, md5path_2, parent_1, parent_2, hash, flags, size, mode, mtime, name, symlink, uid, gid, hardlinks, xattr \
 FROM catalog \
 WHERE md5path_1 = ? AND md5path_2 = ? \
 LIMIT 1;";

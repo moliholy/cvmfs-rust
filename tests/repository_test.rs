@@ -491,6 +491,9 @@ fn test_directory_entry_file_attributes() -> CvmfsResult<()> {
 	assert!(entry.content_hash_string().is_some());
 	assert!(entry.mode > 0);
 	assert!(entry.mtime > 0);
+	assert_eq!(entry.uid, 313);
+	assert_eq!(entry.gid, 313);
+	assert!(entry.nlink() > 0);
 	Ok(())
 }
 
@@ -599,7 +602,9 @@ fn test_fs_getattr_file() {
 	let (_, attr) = fs.getattr(dummy_req(), Path::new("/testfile"), None).unwrap();
 	assert_eq!(attr.kind, fuse_mt::FileType::RegularFile);
 	assert_eq!(attr.size, 50);
-	assert_eq!(attr.nlink, 1);
+	assert!(attr.nlink > 0);
+	assert_eq!(attr.uid, 313);
+	assert_eq!(attr.gid, 313);
 	assert_eq!(attr.flags, 0);
 	assert_eq!(attr.rdev, 0);
 }

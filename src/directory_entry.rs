@@ -237,6 +237,14 @@ pub struct DirectoryEntry {
 	pub name: String,
 	/// Target path for symbolic links (None for non-symlinks).
 	pub symlink: Option<String>,
+	/// User ID of the file owner.
+	pub uid: u32,
+	/// Group ID of the file owner.
+	pub gid: u32,
+	/// Hardlink group ID (upper 32 bits) and link count (lower 32 bits).
+	pub hardlinks: i64,
+	/// Extended attributes stored as a serialized blob (None if absent).
+	pub xattr: Option<Vec<u8>>,
 	/// Type of hash used for content addressing.
 	pub content_hash_type: ContentHashTypes,
 	/// List of chunks for large files that are split into multiple pieces.
@@ -276,6 +284,10 @@ impl DirectoryEntry {
 			mtime: row.get(8)?,
 			name: row.get(9)?,
 			symlink: row.get(10)?,
+			uid: row.get(11)?,
+			gid: row.get(12)?,
+			hardlinks: row.get(13)?,
+			xattr: row.get(14)?,
 			content_hash_type: Self::read_content_hash_type(flags),
 			chunks: vec![],
 		})
@@ -411,6 +423,16 @@ impl DirectoryEntry {
 	/// # Returns
 	///
 	/// Returns true if the file is chunked (content_hash is None), false otherwise.
+	/// Returns the number of hard links to this entry.
+	pub fn nlink(&self) -> u32 {
+		(self.hardlinks & 0xFFFF_FFFF) as u32
+	}
+
+	/// Returns the hardlink group ID, or 0 if not part of a group.
+	pub fn hardlink_group(&self) -> u32 {
+		((self.hardlinks >> 32) & 0xFFFF_FFFF) as u32
+	}
+
 	pub fn has_chunks(&self) -> bool {
 		self.content_hash.is_none()
 	}
@@ -471,6 +493,10 @@ mod tests {
 			mtime: 1000,
 			name: "test".into(),
 			symlink: None,
+			uid: 1000,
+			gid: 1000,
+			hardlinks: 1,
+			xattr: None,
 			content_hash_type: DirectoryEntry::read_content_hash_type(flags),
 			chunks: vec![],
 		}
@@ -703,5 +729,33 @@ mod tests {
 		assert!(entry.is_file());
 		assert!(!entry.is_directory());
 		assert!(entry.has_chunks());
+	}
+
+	#[test]
+	fn entry_nlink() {
+		let mut entry = make_entry(Flags::File as u32, Some("h".into()));
+		entry.hardlinks = 3;
+		assert_eq!(entry.nlink(), 3);
+	}
+
+	#[test]
+	fn entry_hardlink_group() {
+		let mut entry = make_entry(Flags::File as u32, Some("h".into()));
+		entry.hardlinks = (5_i64 << 32) | 2;
+		assert_eq!(entry.nlink(), 2);
+		assert_eq!(entry.hardlink_group(), 5);
+	}
+
+	#[test]
+	fn entry_uid_gid() {
+		let entry = make_entry(Flags::File as u32, Some("h".into()));
+		assert_eq!(entry.uid, 1000);
+		assert_eq!(entry.gid, 1000);
+	}
+
+	#[test]
+	fn entry_xattr_none() {
+		let entry = make_entry(Flags::File as u32, Some("h".into()));
+		assert!(entry.xattr.is_none());
 	}
 }
