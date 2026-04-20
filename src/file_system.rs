@@ -47,8 +47,6 @@ fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
         FileType::Directory
     } else if dirent.is_symlink() {
         FileType::Symlink
-    } else if dirent.is_file() {
-        FileType::RegularFile
     } else {
         FileType::RegularFile
     }
@@ -125,9 +123,10 @@ impl FilesystemMT for CernvmFileSystem {
         let date_time: DateTime<Utc> =
             DateTime::from_timestamp(result.mtime, 0).ok_or(CvmfsError::InvalidTimestamp)?;
         let time = SystemTime::from(date_time);
+        let size = result.size as u64;
         let file_attr = FileAttr {
-            size: result.size,
-            blocks: 1 + result.size / 512,
+            size,
+            blocks: 1 + size / 512,
             atime: time,
             mtime: time,
             ctime: time,
@@ -444,10 +443,10 @@ impl FilesystemMT for CernvmFileSystem {
         let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
         let statistics = repo.get_statistics()?;
         Ok(Statfs {
-            blocks: 1 + statistics.file_size / 512,
+            blocks: 1 + statistics.file_size as u64 / 512,
             bfree: 0,
             bavail: 0,
-            files: statistics.regular,
+            files: statistics.regular as u64,
             ffree: 0,
             bsize: 512,
             namelen: 255,

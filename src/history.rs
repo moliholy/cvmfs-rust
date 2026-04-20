@@ -236,7 +236,7 @@ impl History {
     ///     println!("On Jan 1, 2023, repository was at revision {}", tag.revision);
     /// }
     /// ```
-    pub fn get_tag_by_date(&self, timestamp: u64) -> CvmfsResult<Option<RevisionTag>> {
+    pub fn get_tag_by_date(&self, timestamp: i64) -> CvmfsResult<Option<RevisionTag>> {
         self.get_tag_by_query(SQL_QUERY_DATE, timestamp.to_string().as_str())
     }
 }

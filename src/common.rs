@@ -70,13 +70,15 @@ impl Read for ChunkedFile {
             .chunks
             .iter()
             .position(|(_, chunk)| {
-                self.position >= chunk.offset && self.position < chunk.offset + chunk.size
+                let offset = chunk.offset as u64;
+                let size = chunk.size as u64;
+                self.position >= offset && self.position < offset + size
             })
             .unwrap_or(usize::MAX);
         while currently_read < buf.len() && index < self.chunks.len() {
             let (path, chunk) = &self.chunks[index];
-            let chunk_position = self.position - chunk.offset;
-            let remaining_in_chunk = chunk.size.saturating_sub(chunk_position);
+            let chunk_position = self.position - chunk.offset as u64;
+            let remaining_in_chunk = (chunk.size as u64).saturating_sub(chunk_position);
             let local_path = self
                 .fetcher
                 .retrieve_file(path.as_str())
@@ -125,7 +127,7 @@ impl AsRawFd for ChunkedFile {
             .chunks
             .iter()
             .fold(String::new(), |mut acc, (_, chunk)| {
-                acc.extend(chunk.content_hash.chars());
+                acc.push_str(&chunk.content_hash);
                 acc
             });
         let hash = md5::compute(hash_concat.as_bytes()).0;
@@ -239,11 +241,11 @@ pub fn canonicalize_path(path: &str) -> PathBuf {
 pub fn split_md5(md5_digest: &[u8; 16]) -> PathHash {
     let mut hi = 0;
     let mut lo = 0;
-    for i in 0..8 {
-        lo |= (md5_digest[i] as i64) << (i * 8);
+    for (i, &byte) in md5_digest[..8].iter().enumerate() {
+        lo |= (byte as i64) << (i * 8);
     }
-    for i in 8..16 {
-        hi |= (md5_digest[i] as i64) << ((i - 8) * 8)
+    for (i, &byte) in md5_digest[8..].iter().enumerate() {
+        hi |= (byte as i64) << (i * 8);
     }
     PathHash {
         hash1: lo,

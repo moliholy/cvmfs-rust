@@ -55,9 +55,9 @@ impl Repository {
     pub fn retrieve_object(&self, dirent: &DirectoryEntry) -> CvmfsResult<Box<dyn FileLike>> {
         if dirent.has_chunks() {
             let chunks: CvmfsResult<Vec<(String, Chunk)>> = dirent
-                .clone()
                 .chunks
-                .into_iter()
+                .iter()
+                .cloned()
                 .map(|chunk| -> CvmfsResult<(String, Chunk)> {
                     let path = compose_object_path(chunk.content_hash_string().as_str(), "")
                         .to_str()
@@ -68,7 +68,7 @@ impl Repository {
                 .collect();
             Ok(Box::new(ChunkedFile::new(
                 chunks?,
-                dirent.size,
+                dirent.size as u64,
                 Fetcher::new(
                     self.fetcher.source.as_str(),
                     self.fetcher.cache.cache_directory.as_str(),
@@ -196,7 +196,7 @@ impl Repository {
         Ok(&self.current_tag()?.name)
     }
 
-    pub fn get_timestamp(&self) -> CvmfsResult<u64> {
+    pub fn get_timestamp(&self) -> CvmfsResult<i64> {
         Ok(self.current_tag()?.timestamp)
     }
 

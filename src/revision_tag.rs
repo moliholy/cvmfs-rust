@@ -101,7 +101,7 @@ pub struct RevisionTag {
     /// The numeric revision identifier for this tag.
     pub revision: i32,
     /// Unix timestamp (seconds since epoch) when this tag was created.
-    pub timestamp: u64,
+    pub timestamp: i64,
     /// Channel identifier for this tag (used for categorizing tags).
     pub channel: i32,
     /// Human-readable description of this tag's purpose or contents.

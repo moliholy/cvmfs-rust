@@ -155,8 +155,8 @@ impl BitAnd<Flags> for u32 {
 /// change.
 #[derive(Debug, Clone)]
 pub struct Chunk {
-    pub offset: u64,
-    pub size: u64,
+    pub offset: i64,
+    pub size: i64,
     pub content_hash: String,
     pub content_hash_type: ContentHashTypes,
 }
@@ -217,17 +217,6 @@ pub struct DirectoryEntryWrapper {
 ///
 /// Directory entries are stored in the catalog database and are the primary objects
 /// used for filesystem operations like listing directories and looking up files.
-/// Represents a file system object in the CernVM-FS repository.
-///
-/// A DirectoryEntry contains all metadata for a file, directory, or symbolic link
-/// in the repository. This includes basic file attributes (size, permissions, timestamps),
-/// content addressing information (hashes for retrieving file content), and type flags.
-///
-/// For large files that are split into chunks, the DirectoryEntry also maintains a list
-/// of chunks that make up the complete file.
-///
-/// Directory entries are stored in the catalog database and are the primary objects
-/// used for filesystem operations like listing directories and looking up files.
 #[derive(Debug, Clone)]
 pub struct DirectoryEntry {
     /// First 64 bits of the MD5 hash of the entry's path.
@@ -243,7 +232,7 @@ pub struct DirectoryEntry {
     /// Bit flags indicating the entry type and properties.
     pub flags: u32,
     /// Size of the file in bytes.
-    pub size: u64,
+    pub size: i64,
     /// Unix file mode/permissions (as a 16-bit value).
     pub mode: u16,
     /// Modification time (Unix timestamp).

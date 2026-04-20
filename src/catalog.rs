@@ -126,29 +126,29 @@ pub struct Catalog {
 #[derive(Debug, Default)]
 pub struct Statistics {
     /// Number of chunked files (files split into multiple pieces).
-    pub chunked: u64,
+    pub chunked: i64,
     /// Total size of all chunked files in bytes.
-    pub chunked_size: u64,
+    pub chunked_size: i64,
     /// Total number of file chunks across all chunked files.
-    pub chunks: u64,
+    pub chunks: i64,
     /// Number of directories in the repository.
-    pub dir: u64,
+    pub dir: i64,
     /// Number of external files (referenced but not stored in the repository).
-    pub external: u64,
+    pub external: i64,
     /// Total size of all external files in bytes.
-    pub external_file_size: u64,
+    pub external_file_size: i64,
     /// Total size of all files in the repository in bytes.
-    pub file_size: u64,
+    pub file_size: i64,
     /// Number of nested catalogs in the repository.
-    pub nested: u64,
+    pub nested: i64,
     /// Number of regular (non-chunked) files in the repository.
-    pub regular: u64,
+    pub regular: i64,
     /// Number of special files (devices, sockets, etc.).
-    pub special: u64,
+    pub special: i64,
     /// Number of symbolic links in the repository.
-    pub symlink: u64,
+    pub symlink: i64,
     /// Number of files with extended attributes.
-    pub xattr: u64,
+    pub xattr: i64,
 }
 
 /// Mark Catalog as thread-safe for use with synchronization primitives.
@@ -323,7 +323,7 @@ impl Catalog {
     fn path_sanitized(needle_path: &str, catalog_path: &str) -> bool {
         needle_path.len() == catalog_path.len()
             || (needle_path.len() > catalog_path.len()
-                && needle_path.chars().collect::<Vec<char>>()[catalog_path.len()] == '/')
+                && needle_path.as_bytes()[catalog_path.len()] == b'/')
     }
 
     /// Finds the best matching nested catalog for a given path.
