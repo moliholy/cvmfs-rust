@@ -3,12 +3,13 @@ name = "cvmfs"
 version = "0.1.0"
 description = "CernVM-FS client implementation in Rust"
 authors = ["José Molina <jmolinacolmenero@gmail.com>"]
-edition = "2021"
-license = "Apache-2.0"
+edition = "2024"
+license = "BSD-3-Clause"
 publish = false
 repository = "https://github.com/Moliholy/cvmfs-rust"
 keywords = ["cvmfs", "filesystem", "fuse", "cernvm"]
 categories = ["filesystem", "science"]
+readme = "README.md"
 
 [lib]
 name = "cvmfs"
@@ -20,29 +21,29 @@ path = "src/main.rs"
 
 [dependencies]
 # Cryptography and hashing
-sha1 = "0.11.0"
-md5 = "0.8.0"
+sha1 = "0.11"
+md5 = "0.8"
 hex = "0.4"
-x509-certificate = "0.25.0" # X.509 certificate handling
+x509-certificate = "0.25"
 
 # Database and storage
-rusqlite = { version = "0.39.0", features = ["blob"] }
+rusqlite = { version = "0.39", features = ["blob"] }
 
 # Filesystem integration
 fuse_mt = "0.6"
 libc = "0.2"
 
 # Network and HTTP
-reqwest = { version = "0.13.2", features = ["blocking"] }
+reqwest = { version = "0.13", features = ["blocking"] }
 
 # Utilities
 chrono = "0.4"
 compress = "0.2"
-thiserror = "2.0.3"
+thiserror = "2.0"
 
 # Logging
-log = "0.4.22"
-env_logger = "0.11.5"
+log = "0.4"
+env_logger = "0.11"
 
 [profile.release]
 opt-level = 3
