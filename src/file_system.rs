@@ -3,7 +3,7 @@ use std::{
 	ffi::{OsStr, OsString},
 	path::Path,
 	sync::{
-		Mutex, RwLock,
+		Arc, Mutex, RwLock,
 		atomic::{AtomicU64, Ordering},
 	},
 	time::{Duration, Instant, SystemTime},
@@ -95,7 +95,7 @@ pub struct CernvmFileSystem {
 	/// to the map, allowing multiple threads to safely open and close files concurrently.
 	opened_files: RwLock<HashMap<String, Box<dyn FileLike>>>,
 	cached_statfs: Mutex<Option<(Instant, Statfs)>>,
-	lookup_cache: RwLock<HashMap<String, DirectoryEntry>>,
+	lookup_cache: RwLock<HashMap<String, Arc<DirectoryEntry>>>,
 	readdir_cache: RwLock<HashMap<String, Vec<FuseDirectoryEntry>>>,
 }
 
@@ -179,7 +179,7 @@ impl FilesystemMT for CernvmFileSystem {
 		if !result.is_symlink() {
 			return Err(libc::ENOLINK);
 		}
-		Ok(result.symlink.ok_or(CvmfsError::FileNotFound)?.into_bytes())
+		Ok(result.symlink.as_ref().ok_or(CvmfsError::FileNotFound)?.clone().into_bytes())
 	}
 
 	/// Opens a file and returns a file handle
@@ -388,12 +388,7 @@ impl FilesystemMT for CernvmFileSystem {
 		if let Some(entries) = self.readdir_cache.read().ok().and_then(|c| c.get(path).cloned()) {
 			return Ok(entries);
 		}
-		let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
-		let result = repo.lookup(path)?;
-		if !result.is_directory() {
-			log::error!("Path '{path}' is not a directory");
-			return Err(libc::ENOENT);
-		}
+		let repo = self.repository.read().map_err(|_| libc::EIO)?;
 		match repo.list_directory(path) {
 			Ok(entries) => {
 				drop(repo);
@@ -404,7 +399,7 @@ impl FilesystemMT for CernvmFileSystem {
 						} else {
 							format!("{}/{}", path, entry.name)
 						};
-						cache.insert(child_path, entry.clone());
+						cache.insert(child_path, Arc::new(entry.clone()));
 					}
 				}
 				let fuse_entries: Vec<FuseDirectoryEntry> = entries
@@ -468,7 +463,7 @@ impl FilesystemMT for CernvmFileSystem {
 			}
 		}
 		log::info!("Refreshing FS statistics");
-		let mut repo = self.repository.write().map_err(|_| libc::EIO)?;
+		let repo = self.repository.read().map_err(|_| libc::EIO)?;
 		let statistics = repo.get_statistics()?;
 		let result = Statfs {
 			blocks: 1 + statistics.file_size as u64 / 512,
@@ -512,7 +507,7 @@ impl FilesystemMT for CernvmFileSystem {
 			"user.hash" => repo.manifest.root_catalog.clone(),
 			"user.host" => repo.fetcher_source(),
 			"user.expires" => repo.manifest.last_modified.to_rfc3339(),
-			"user.nclg" => repo.opened_catalogs.len().to_string(),
+			"user.nclg" => repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string(),
 			_ => return Err(libc::ENODATA),
 		};
 		let bytes = value.into_bytes();
@@ -545,16 +540,15 @@ impl FilesystemMT for CernvmFileSystem {
 }
 
 impl CernvmFileSystem {
-	fn cached_lookup(&self, path: &str) -> CvmfsResult<DirectoryEntry> {
+	fn cached_lookup(&self, path: &str) -> CvmfsResult<Arc<DirectoryEntry>> {
 		if let Some(entry) = self.lookup_cache.read().ok().and_then(|c| c.get(path).cloned()) {
 			return Ok(entry);
 		}
-		let mut repo =
-			self.repository.write().map_err(|e| CvmfsError::Generic(format!("{:?}", e)))?;
-		let entry = repo.lookup(path)?;
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{:?}", e)))?;
+		let entry = Arc::new(repo.lookup(path)?);
 		drop(repo);
 		if let Ok(mut cache) = self.lookup_cache.write() {
-			cache.insert(path.into(), entry.clone());
+			cache.insert(path.into(), Arc::clone(&entry));
 		}
 		Ok(entry)
 	}

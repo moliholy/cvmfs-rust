@@ -23,11 +23,11 @@ fn create_repo() -> Repository {
 #[test]
 #[serial]
 fn test_initialization() -> CvmfsResult<()> {
-	let mut repo = create_repo();
-	assert_eq!(0, repo.opened_catalogs.len());
+	let repo = create_repo();
+	assert_eq!(0, repo.catalog_count());
 	assert_eq!("boss.cern.ch", repo.fqrn);
 	repo.retrieve_current_root_catalog()?;
-	assert_eq!(1, repo.opened_catalogs.len());
+	assert_eq!(1, repo.catalog_count());
 	Ok(())
 }
 
@@ -79,7 +79,7 @@ fn test_retrieve_history() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_get_tag_by_revision() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let current_rev = repo.get_revision_number()? as u32;
 	let tag = repo.get_tag(current_rev)?;
 	assert_eq!(tag.revision, current_rev as i32);
@@ -90,7 +90,7 @@ fn test_get_tag_by_revision() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_get_last_tag() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let tag = repo.get_last_tag()?;
 	assert!(tag.revision > 0);
 	assert!(!tag.hash.is_empty());
@@ -169,60 +169,74 @@ fn test_history_get_nonexistent_revision() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_retrieve_root_catalog() -> CvmfsResult<()> {
-	let mut repo = create_repo();
-	let catalog = repo.retrieve_current_root_catalog()?;
-	assert!(catalog.is_root());
-	assert!(catalog.revision > 0);
-	assert!(catalog.schema > 0.0);
-	Ok(())
+	let repo = create_repo();
+	repo.retrieve_current_root_catalog()?;
+	let hash = repo.get_root_hash()?.to_string();
+	repo.with_catalog(&hash, |catalog| {
+		assert!(catalog.is_root());
+		assert!(catalog.revision > 0);
+		assert!(catalog.schema > 0.0);
+		Ok(())
+	})
 }
 
 #[test]
 #[serial]
 fn test_catalog_caching() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let hash = repo.get_root_hash()?.to_string();
-	repo.retrieve_catalog(&hash)?;
-	assert_eq!(1, repo.opened_catalogs.len());
-	repo.retrieve_catalog(&hash)?;
-	assert_eq!(1, repo.opened_catalogs.len());
+	repo.with_catalog(&hash, |_| Ok(()))?;
+	assert_eq!(1, repo.catalog_count());
+	repo.with_catalog(&hash, |_| Ok(()))?;
+	assert_eq!(1, repo.catalog_count());
 	Ok(())
 }
 
 #[test]
 #[serial]
 fn test_catalog_has_nested() -> CvmfsResult<()> {
-	let mut repo = create_repo();
-	let catalog = repo.retrieve_current_root_catalog()?;
-	assert!(catalog.has_nested()?);
-	let count = catalog.nested_count()?;
-	assert!(count > 0);
-	Ok(())
+	let repo = create_repo();
+	repo.retrieve_current_root_catalog()?;
+	let hash = repo.get_root_hash()?.to_string();
+	repo.with_catalog(&hash, |catalog| {
+		assert!(catalog.has_nested()?);
+		let count = catalog.nested_count()?;
+		assert!(count > 0);
+		Ok(())
+	})
 }
 
 #[test]
 #[serial]
 fn test_catalog_list_nested() -> CvmfsResult<()> {
-	let mut repo = create_repo();
-	let catalog = repo.retrieve_current_root_catalog()?;
-	let nested = catalog.list_nested()?;
-	assert!(!nested.is_empty());
-	for nested_ref in &nested {
-		assert!(!nested_ref.root_path.is_empty());
-		assert!(!nested_ref.catalog_hash.is_empty());
-	}
-	Ok(())
+	let repo = create_repo();
+	repo.retrieve_current_root_catalog()?;
+	let hash = repo.get_root_hash()?.to_string();
+	repo.with_catalog(&hash, |catalog| {
+		let nested = catalog.list_nested()?;
+		assert!(!nested.is_empty());
+		for nested_ref in &nested {
+			assert!(!nested_ref.root_path.is_empty());
+			assert!(!nested_ref.catalog_hash.is_empty());
+		}
+		Ok(())
+	})
 }
 
 #[test]
 #[serial]
 fn test_retrieve_catalog_for_path() -> CvmfsResult<()> {
-	let mut repo = create_repo();
-	let catalog = repo.retrieve_catalog_for_path("")?;
-	assert!(catalog.is_root());
-	let nested_catalog = repo.retrieve_catalog_for_path("/slc4_ia32_gcc34")?;
-	assert!(!nested_catalog.is_root());
-	Ok(())
+	let repo = create_repo();
+	let root_hash = repo.retrieve_catalog_for_path("")?;
+	repo.with_catalog(&root_hash, |catalog| {
+		assert!(catalog.is_root());
+		Ok(())
+	})?;
+	let nested_hash = repo.retrieve_catalog_for_path("/slc4_ia32_gcc34")?;
+	repo.with_catalog(&nested_hash, |catalog| {
+		assert!(!catalog.is_root());
+		Ok(())
+	})
 }
 
 // --- Statistics ---
@@ -230,7 +244,8 @@ fn test_retrieve_catalog_for_path() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_statistics() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
+	repo.retrieve_current_root_catalog()?;
 	let stats = repo.get_statistics()?;
 	assert!(stats.dir > 0);
 	assert!(stats.regular > 0);
@@ -243,7 +258,7 @@ fn test_statistics() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_list_root_directory() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entries = repo.list_directory("/")?;
 	assert!(!entries.is_empty());
 	let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -256,7 +271,7 @@ fn test_list_root_directory() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_list_subdirectory() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entries = repo.list_directory("/database")?;
 	assert!(!entries.is_empty());
 	let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
@@ -268,7 +283,7 @@ fn test_list_subdirectory() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_list_nested_catalog_directory() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entries = repo.list_directory("/slc4_ia32_gcc34")?;
 	assert!(!entries.is_empty());
 	Ok(())
@@ -277,7 +292,7 @@ fn test_list_nested_catalog_directory() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_list_nonexistent_directory() {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let result = repo.list_directory("/nonexistent_path_xyz");
 	assert!(result.is_err());
 }
@@ -287,7 +302,7 @@ fn test_list_nonexistent_directory() {
 #[test]
 #[serial]
 fn test_lookup_root() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/")?;
 	assert!(entry.is_directory());
 	Ok(())
@@ -296,7 +311,7 @@ fn test_lookup_root() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_lookup_file() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/testfile")?;
 	assert!(entry.is_file());
 	assert_eq!(entry.name, "testfile");
@@ -307,7 +322,7 @@ fn test_lookup_file() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_lookup_directory() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/database")?;
 	assert!(entry.is_directory());
 	assert_eq!(entry.name, "database");
@@ -317,7 +332,7 @@ fn test_lookup_directory() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_lookup_symlink() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/pacman-3.29/setup.csh")?;
 	assert!(entry.is_symlink());
 	assert_eq!(entry.symlink.as_deref(), Some("scripts/initialize_setup.csh"));
@@ -327,7 +342,7 @@ fn test_lookup_symlink() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_lookup_nested_catalog_entry() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/slc4_ia32_gcc34")?;
 	assert!(entry.is_directory());
 	assert!(entry.is_nested_catalog_mountpoint() || entry.is_nested_catalog_root());
@@ -337,7 +352,7 @@ fn test_lookup_nested_catalog_entry() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_lookup_nonexistent() {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let result = repo.lookup("/this/does/not/exist");
 	assert!(result.is_err());
 }
@@ -347,7 +362,7 @@ fn test_lookup_nonexistent() {
 #[test]
 #[serial]
 fn test_get_file_regular() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let file = repo.get_file("/testfile")?;
 	let mut buf = vec![0u8; file.file_size() as usize];
 	let n = file.read_at(0, &mut buf)?;
@@ -360,7 +375,7 @@ fn test_get_file_regular() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_get_file_binary() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let file = repo.get_file("/pacman-latest.tar.gz")?;
 	let mut header = [0u8; 2];
 	file.read_at(0, &mut header)?;
@@ -371,7 +386,7 @@ fn test_get_file_binary() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_get_file_not_a_file() {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let result = repo.get_file("/database");
 	assert!(result.is_err());
 }
@@ -379,7 +394,7 @@ fn test_get_file_not_a_file() {
 #[test]
 #[serial]
 fn test_get_file_nonexistent() {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let result = repo.get_file("/nonexistent_file");
 	assert!(result.is_err());
 }
@@ -389,7 +404,7 @@ fn test_get_file_nonexistent() {
 #[test]
 #[serial]
 fn test_chunked_file_read_first_bytes() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let file = repo.get_file("/database/offlinedb.db")?;
 	let mut header = [0u8; 16];
 	file.read_at(0, &mut header)?;
@@ -400,7 +415,7 @@ fn test_chunked_file_read_first_bytes() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_chunked_file_seek_and_read() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let file = repo.get_file("/database/offlinedb.db")?;
 	let mut buf1 = [0u8; 64];
 	file.read_at(0, &mut buf1)?;
@@ -413,7 +428,7 @@ fn test_chunked_file_seek_and_read() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_chunked_file_cross_chunk_read() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/database/offlinedb.db")?;
 	assert!(entry.has_chunks());
 	assert!(!entry.chunks.is_empty());
@@ -475,7 +490,7 @@ fn test_fetcher_retrieve_file_cached() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_directory_entry_file_attributes() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/testfile")?;
 	assert!(entry.is_file());
 	assert!(!entry.is_directory());
@@ -494,7 +509,7 @@ fn test_directory_entry_file_attributes() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_directory_entry_chunked_attributes() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/database/offlinedb.db")?;
 	assert!(entry.is_file());
 	assert!(entry.has_chunks());
@@ -511,7 +526,7 @@ fn test_directory_entry_chunked_attributes() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_directory_entry_symlink_attributes() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	let entry = repo.lookup("/pacman-3.29/setup.csh")?;
 	assert!(entry.is_symlink());
 	assert!(!entry.is_directory());
@@ -524,39 +539,42 @@ fn test_directory_entry_symlink_attributes() -> CvmfsResult<()> {
 #[test]
 #[serial]
 fn test_catalog_find_directory_entry() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	repo.retrieve_current_root_catalog()?;
 	let hash = repo.get_root_hash()?.to_string();
-	let catalog = repo.retrieve_catalog(&hash)?;
-	let entry = catalog.find_directory_entry("")?;
-	assert!(entry.is_directory());
-	Ok(())
+	repo.with_catalog(&hash, |catalog| {
+		let entry = catalog.find_directory_entry("")?;
+		assert!(entry.is_directory());
+		Ok(())
+	})
 }
 
 #[test]
 #[serial]
 fn test_catalog_list_directory() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	repo.retrieve_current_root_catalog()?;
 	let hash = repo.get_root_hash()?.to_string();
-	let catalog = repo.retrieve_catalog(&hash)?;
-	let entries = catalog.list_directory("/")?;
-	assert!(!entries.is_empty());
-	Ok(())
+	repo.with_catalog(&hash, |catalog| {
+		let entries = catalog.list_directory("/")?;
+		assert!(!entries.is_empty());
+		Ok(())
+	})
 }
 
 #[test]
 #[serial]
 fn test_catalog_statistics() -> CvmfsResult<()> {
-	let mut repo = create_repo();
+	let repo = create_repo();
 	repo.retrieve_current_root_catalog()?;
 	let hash = repo.get_root_hash()?.to_string();
-	let catalog = repo.retrieve_catalog(&hash)?;
-	let stats = catalog.get_statistics()?;
-	assert!(stats.dir > 0);
-	assert!(stats.regular > 0);
-	assert!(stats.file_size > 0);
-	Ok(())
+	repo.with_catalog(&hash, |catalog| {
+		let stats = catalog.get_statistics()?;
+		assert!(stats.dir > 0);
+		assert!(stats.regular > 0);
+		assert!(stats.file_size > 0);
+		Ok(())
+	})
 }
 
 // --- Certificate ---

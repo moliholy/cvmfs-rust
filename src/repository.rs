@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fs, fs::File};
+use std::{collections::HashMap, fs, fs::File, sync::RwLock};
 
 use chrono::{DateTime, Utc};
 
@@ -22,7 +22,7 @@ use crate::{
 /// Wrapper around a CVMFS repository representation
 #[derive(Debug)]
 pub struct Repository {
-	pub opened_catalogs: HashMap<String, Catalog>,
+	pub opened_catalogs: RwLock<HashMap<String, Catalog>>,
 	pub manifest: Manifest,
 	pub fqrn: String,
 	pub repo_type: String,
@@ -41,7 +41,7 @@ impl Repository {
 			Self::try_to_get_last_replication_timestamp(&fetcher).unwrap_or(None);
 		let replicating_since = Self::try_to_get_replication_state(&fetcher).unwrap_or(None);
 		let mut obj = Self {
-			opened_catalogs: HashMap::new(),
+			opened_catalogs: RwLock::new(HashMap::new()),
 			fqrn: manifest.repository_name.clone(),
 			manifest,
 			repo_type: "stratum1".to_string(),
@@ -109,18 +109,22 @@ impl Repository {
 	}
 
 	/// Download and open a catalog from the repository
-	pub fn retrieve_catalog(&mut self, catalog_hash: &str) -> CvmfsResult<&Catalog> {
-		if self.opened_catalogs.contains_key(catalog_hash) {
-			return Ok(&self.opened_catalogs[catalog_hash]);
+	fn ensure_catalog_loaded(&self, catalog_hash: &str) -> CvmfsResult<()> {
+		if self
+			.opened_catalogs
+			.read()
+			.map_err(|_| CvmfsError::Sync)?
+			.contains_key(catalog_hash)
+		{
+			return Ok(());
 		}
-		self.retrieve_and_open_catalog(catalog_hash)
-	}
-
-	pub fn retrieve_and_open_catalog(&mut self, catalog_hash: &str) -> CvmfsResult<&Catalog> {
 		let catalog_file = self.retrieve_object_with_suffix(catalog_hash, CATALOG_ROOT_PREFIX)?;
 		let catalog = Catalog::new(catalog_file, catalog_hash.into())?;
-		self.opened_catalogs.insert(catalog_hash.into(), catalog);
-		self.opened_catalogs.get(catalog_hash).ok_or(CvmfsError::CatalogNotFound)
+		self.opened_catalogs
+			.write()
+			.map_err(|_| CvmfsError::Sync)?
+			.insert(catalog_hash.into(), catalog);
+		Ok(())
 	}
 
 	pub fn has_history(&self) -> bool {
@@ -138,7 +142,7 @@ impl Repository {
 		History::new(&history_db)
 	}
 
-	pub fn get_tag(&mut self, number: u32) -> CvmfsResult<RevisionTag> {
+	pub fn get_tag(&self, number: u32) -> CvmfsResult<RevisionTag> {
 		let history = self.retrieve_history()?;
 		let tag = history.get_tag_by_revision(number)?;
 		match tag {
@@ -156,7 +160,7 @@ impl Repository {
 		Ok(())
 	}
 
-	pub fn get_last_tag(&mut self) -> CvmfsResult<RevisionTag> {
+	pub fn get_last_tag(&self) -> CvmfsResult<RevisionTag> {
 		self.get_tag(self.manifest.revision)
 	}
 
@@ -241,33 +245,39 @@ impl Repository {
 		Ok(self.current_tag()?.timestamp)
 	}
 
-	pub fn retrieve_current_root_catalog(&mut self) -> CvmfsResult<&Catalog> {
+	pub fn retrieve_current_root_catalog(&self) -> CvmfsResult<()> {
 		let root_hash = self.current_tag()?.hash.to_string();
-		self.retrieve_catalog(&root_hash)
+		self.ensure_catalog_loaded(&root_hash)
 	}
 
-	/// Recursively walk down the Catalogs and find the best fit for a path
-	pub fn retrieve_catalog_for_path(&mut self, needle_path: &str) -> CvmfsResult<&Catalog> {
+	/// Recursively walk down the Catalogs and find the best fit hash for a path
+	fn resolve_catalog_hash(&self, needle_path: &str) -> CvmfsResult<String> {
 		let mut hash = String::from(self.get_root_hash()?);
 		loop {
-			match self.retrieve_catalog(&hash)?.find_nested_for_path(needle_path) {
-				Ok(None) => return self.retrieve_catalog(&hash),
-				Ok(Some(nested_reference)) => hash = nested_reference.catalog_hash.clone(),
+			self.ensure_catalog_loaded(&hash)?;
+			let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+			let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
+			match catalog.find_nested_for_path(needle_path) {
+				Ok(None) => return Ok(hash),
+				Ok(Some(nested_reference)) => {
+					let next = nested_reference.catalog_hash.clone();
+					drop(catalogs);
+					hash = next;
+				}
 				Err(error) => return Err(error),
 			};
 		}
 	}
 
-	pub fn lookup(&mut self, path: &str) -> CvmfsResult<DirectoryEntry> {
-		let mut path = String::from(path);
-		if path.eq("/") {
-			path = String::new();
-		}
-		let best_fit = self.retrieve_catalog_for_path(&path)?;
-		best_fit.find_directory_entry(&path)
+	pub fn lookup(&self, path: &str) -> CvmfsResult<DirectoryEntry> {
+		let path = if path == "/" { "" } else { path };
+		let hash = self.resolve_catalog_hash(path)?;
+		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
+		catalog.find_directory_entry(path)
 	}
 
-	pub fn get_file(&mut self, path: &str) -> CvmfsResult<Box<dyn FileLike>> {
+	pub fn get_file(&self, path: &str) -> CvmfsResult<Box<dyn FileLike>> {
 		let directory_entry = self.lookup(path)?;
 		if !directory_entry.is_file() {
 			return Err(CvmfsError::NotAFile);
@@ -276,25 +286,49 @@ impl Repository {
 	}
 
 	/// List all the entries in a directory
-	pub fn list_directory(&mut self, path: &str) -> CvmfsResult<Vec<DirectoryEntry>> {
+	pub fn list_directory(&self, path: &str) -> CvmfsResult<Vec<DirectoryEntry>> {
 		let dirent = self.lookup(path)?;
 		if !dirent.is_directory() {
 			return Err(CvmfsError::FileNotFound);
 		}
-		let best_fit = self.retrieve_catalog_for_path(path)?;
-		best_fit.list_directory(path)
+		let hash = self.resolve_catalog_hash(path)?;
+		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
+		catalog.list_directory(path)
 	}
 
 	pub fn fetcher_source(&self) -> String {
 		self.fetcher.source.clone()
 	}
 
-	pub fn get_statistics(&mut self) -> CvmfsResult<Statistics> {
-		self.retrieve_current_root_catalog()?.get_statistics()
+	pub fn get_statistics(&self) -> CvmfsResult<Statistics> {
+		self.retrieve_current_root_catalog()?;
+		let root_hash = self.current_tag()?.hash.to_string();
+		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalog = catalogs.get(&root_hash).ok_or(CvmfsError::CatalogNotFound)?;
+		catalog.get_statistics()
 	}
 
 	pub fn retrieve_reflog(&self) -> CvmfsResult<Reflog> {
 		let reflog_file = self.fetcher.retrieve_raw_file(REFLOG_NAME)?;
 		Reflog::new(&reflog_file)
+	}
+
+	pub fn catalog_count(&self) -> usize {
+		self.opened_catalogs.read().map(|c| c.len()).unwrap_or(0)
+	}
+
+	pub fn retrieve_catalog_for_path(&self, path: &str) -> CvmfsResult<String> {
+		self.resolve_catalog_hash(path)
+	}
+
+	pub fn with_catalog<F, R>(&self, hash: &str, f: F) -> CvmfsResult<R>
+	where
+		F: FnOnce(&Catalog) -> CvmfsResult<R>,
+	{
+		self.ensure_catalog_loaded(hash)?;
+		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalog = catalogs.get(hash).ok_or(CvmfsError::CatalogNotFound)?;
+		f(catalog)
 	}
 }
