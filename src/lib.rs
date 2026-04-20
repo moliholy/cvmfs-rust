@@ -11,3 +11,4 @@ pub mod manifest;
 pub mod repository;
 pub mod revision_tag;
 pub mod root_file;
+pub mod whitelist;

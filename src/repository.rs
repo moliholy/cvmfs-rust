@@ -7,7 +7,7 @@ use crate::{
 	certificate::{CERTIFICATE_ROOT_PREFIX, Certificate},
 	common::{
 		ChunkedFile, CvmfsError, CvmfsResult, FileLike, LAST_REPLICATION_NAME, MANIFEST_NAME,
-		REPLICATING_NAME, compose_object_path,
+		REPLICATING_NAME, WHITELIST_NAME, compose_object_path,
 	},
 	directory_entry::{Chunk, DirectoryEntry},
 	fetcher::Fetcher,
@@ -15,6 +15,7 @@ use crate::{
 	manifest::Manifest,
 	revision_tag::RevisionTag,
 	root_file::RootFile,
+	whitelist::Whitelist,
 };
 
 /// Wrapper around a CVMFS repository representation
@@ -34,6 +35,7 @@ pub struct Repository {
 impl Repository {
 	pub fn new(fetcher: Fetcher) -> CvmfsResult<Self> {
 		let manifest = Self::read_manifest(&fetcher)?;
+		Self::validate_whitelist(&fetcher, &manifest.repository_name)?;
 		let last_replication =
 			Self::try_to_get_last_replication_timestamp(&fetcher).unwrap_or(None);
 		let replicating_since = Self::try_to_get_replication_state(&fetcher).unwrap_or(None);
@@ -186,6 +188,22 @@ impl Repository {
 			Ok(date) => Ok(Some(DateTime::from(date))),
 			Err(_) => Ok(None),
 		}
+	}
+
+	fn validate_whitelist(fetcher: &Fetcher, fqrn: &str) -> CvmfsResult<()> {
+		let whitelist_file = fetcher.retrieve_raw_file(WHITELIST_NAME)?;
+		let content = fs::read(&whitelist_file)?;
+		let whitelist = Whitelist::parse(&content)?;
+		if !whitelist.matches_repository(fqrn) {
+			return Err(CvmfsError::Generic(format!(
+				"whitelist repository '{}' does not match '{fqrn}'",
+				whitelist.repository_name
+			)));
+		}
+		if whitelist.is_expired() {
+			return Err(CvmfsError::Generic("whitelist has expired".into()));
+		}
+		Ok(())
 	}
 
 	fn try_to_get_last_replication_timestamp(
