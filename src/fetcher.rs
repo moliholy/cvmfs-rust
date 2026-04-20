@@ -23,10 +23,11 @@
 //! includes the repository name and a `.cvmfs` suffix. For example:
 //! `http://cvmfs-stratum-one.cern.ch/cvmfs/atlas.cern.ch`
 
-use std::{fs, io::Read, path::Path, time::Duration};
+use std::{fs, io::Read, path::Path, thread, time::Duration};
 
 use compress::zlib;
 use reqwest::blocking::Client;
+use sha1::{Digest, Sha1};
 
 use crate::{
 	cache::Cache,
@@ -36,6 +37,9 @@ use crate::{
 
 const MAX_DOWNLOAD_SIZE: u64 = 1024 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+const BACKOFF_INIT: Duration = Duration::from_secs(2);
+const BACKOFF_MAX: Duration = Duration::from_secs(10);
+const MAX_RETRIES: u32 = 3;
 
 /// Manages retrieval of repository content from both cache and remote sources
 ///
@@ -53,6 +57,7 @@ pub struct Fetcher {
 	pub cache: Cache,
 	pub source: String,
 	pub mirrors: Vec<String>,
+	pub proxy: Option<String>,
 }
 
 impl Fetcher {
@@ -67,7 +72,7 @@ impl Fetcher {
 		if initialize {
 			cache.initialize()?;
 		}
-		Ok(Self { cache, source, mirrors: Vec::new() })
+		Ok(Self { cache, source, mirrors: Vec::new(), proxy: None })
 	}
 
 	pub fn with_mirrors(
@@ -91,6 +96,10 @@ impl Fetcher {
 		Ok(fetcher)
 	}
 
+	pub fn set_proxy(&mut self, proxy_url: &str) {
+		self.proxy = Some(proxy_url.to_string());
+	}
+
 	pub fn sort_mirrors_by_geo(&mut self, repo_name: &str) {
 		let mut all = vec![self.source.clone()];
 		all.extend(self.mirrors.clone());
@@ -112,7 +121,7 @@ impl Fetcher {
 		let mut last_err = None;
 		for source in self.all_sources() {
 			let file_url = Path::join(source.as_ref(), file_name);
-			match Self::download_content_and_store(
+			match self.download_content_and_store(
 				cache_str,
 				file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
 			) {
@@ -144,7 +153,7 @@ impl Fetcher {
 		let mut last_err = None;
 		for source in self.all_sources() {
 			let file_url = Path::join(source.as_ref(), file_name);
-			match Self::download_content_and_decompress(
+			match self.download_content_and_decompress(
 				cache_str,
 				file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
 			) {
@@ -164,26 +173,58 @@ impl Fetcher {
 		std::iter::once(self.source.as_str()).chain(self.mirrors.iter().map(String::as_str))
 	}
 
-	fn validated_get(file_url: &str) -> CvmfsResult<Vec<u8>> {
-		let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
-		let response = client.get(file_url).send()?;
-		if !response.status().is_success() {
-			return Err(CvmfsError::IO(format!("HTTP {} for {}", response.status(), file_url)));
+	fn build_client(&self) -> CvmfsResult<Client> {
+		let mut builder = Client::builder().timeout(REQUEST_TIMEOUT);
+		if let Some(proxy_url) = &self.proxy {
+			builder = builder.proxy(
+				reqwest::Proxy::all(proxy_url)
+					.map_err(|e| CvmfsError::IO(format!("invalid proxy: {e}")))?,
+			);
 		}
-		if let Some(len) = response.content_length().filter(|&l| l > MAX_DOWNLOAD_SIZE) {
-			return Err(CvmfsError::IO(format!("response too large: {len} bytes")));
-		}
-		Ok(response.bytes()?.to_vec())
+		Ok(builder.build()?)
 	}
 
-	fn download_content_and_decompress(cached_file: &str, file_url: &str) -> CvmfsResult<()> {
-		let file_bytes = Self::validated_get(file_url)?;
+	fn validated_get(&self, file_url: &str) -> CvmfsResult<Vec<u8>> {
+		let client = self.build_client()?;
+		let mut last_err = None;
+		let mut delay = BACKOFF_INIT;
+		for _ in 0..=MAX_RETRIES {
+			match client.get(file_url).send() {
+				Ok(response) => {
+					if !response.status().is_success() {
+						last_err = Some(CvmfsError::IO(format!(
+							"HTTP {} for {}",
+							response.status(),
+							file_url
+						)));
+					} else if let Some(len) =
+						response.content_length().filter(|&l| l > MAX_DOWNLOAD_SIZE)
+					{
+						return Err(CvmfsError::IO(format!("response too large: {len} bytes")));
+					} else {
+						return Ok(response.bytes()?.to_vec());
+					}
+				}
+				Err(e) => last_err = Some(CvmfsError::from(e)),
+			}
+			thread::sleep(delay);
+			delay = (delay * 2).min(BACKOFF_MAX);
+		}
+		Err(last_err.unwrap_or(CvmfsError::FileNotFound))
+	}
+
+	fn download_content_and_decompress(
+		&self,
+		cached_file: &str,
+		file_url: &str,
+	) -> CvmfsResult<()> {
+		let file_bytes = self.validated_get(file_url)?;
 		Self::decompress(&file_bytes, cached_file)?;
 		Ok(())
 	}
 
-	fn download_content_and_store(cached_file: &str, file_url: &str) -> CvmfsResult<()> {
-		let content = Self::validated_get(file_url)?;
+	fn download_content_and_store(&self, cached_file: &str, file_url: &str) -> CvmfsResult<()> {
+		let content = self.validated_get(file_url)?;
 		fs::write(cached_file, content)?;
 		Ok(())
 	}
@@ -206,6 +247,30 @@ impl Fetcher {
 		let decompressed =
 			zstd::stream::decode_all(data).map_err(|e| CvmfsError::IO(format!("zstd: {e}")))?;
 		Ok(decompressed)
+	}
+
+	pub fn verify_hash(data: &[u8], expected_hash: &str) -> CvmfsResult<()> {
+		let mut hasher = Sha1::new();
+		hasher.update(data);
+		let computed: String = hex::encode(hasher.finalize());
+		let expected_clean = expected_hash.split('-').next().unwrap_or(expected_hash);
+		if computed != expected_clean {
+			return Err(CvmfsError::IO(format!(
+				"hash mismatch: expected {expected_clean}, got {computed}"
+			)));
+		}
+		Ok(())
+	}
+
+	pub fn retrieve_file_verified(
+		&self,
+		file_name: &str,
+		expected_hash: &str,
+	) -> CvmfsResult<String> {
+		let path = self.retrieve_file(file_name)?;
+		let data = fs::read(&path)?;
+		Self::verify_hash(&data, expected_hash)?;
+		Ok(path)
 	}
 
 	fn try_decompress_lz4(data: &[u8]) -> CvmfsResult<Vec<u8>> {
