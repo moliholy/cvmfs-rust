@@ -13,8 +13,8 @@ ITERATIONS=50
 cleanup() {
     umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
     umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
-    kill $RUST_PID 2>/dev/null || true
-    kill $CPP_PID 2>/dev/null || true
+    kill "${RUST_PID:-}" 2>/dev/null || true
+    kill "${CPP_PID:-}" 2>/dev/null || true
     sleep 1
     rmdir "$RUST_MOUNT" "$CPP_MOUNT" 2>/dev/null || true
     rm -rf "$RUST_CACHE" "$CPP_CACHE"
