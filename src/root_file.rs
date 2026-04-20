@@ -123,9 +123,7 @@ impl RootFile {
                 if !(bytes_read == 41 || bytes_read == 42) {
                     return Err(CvmfsError::IO("Input does not have 41 bytes".to_string()));
                 }
-                if buffer.len() < 40
-                    || !buffer[..40].chars().all(|c| c.is_ascii_hexdigit())
-                {
+                if buffer.len() < 40 || !buffer[..40].chars().all(|c| c.is_ascii_hexdigit()) {
                     return Err(CvmfsError::InvalidRootFileSignature);
                 }
                 checksum = Some(buffer[..40].into());

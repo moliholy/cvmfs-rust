@@ -1,7 +1,7 @@
+use rsa::RsaPublicKey;
 use rsa::pkcs1v15::{Signature, VerifyingKey};
 use rsa::pkcs8::DecodePublicKey;
 use rsa::signature::Verifier;
-use rsa::RsaPublicKey;
 use sha1::Sha1;
 use x509_certificate::X509Certificate;
 

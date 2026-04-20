@@ -86,13 +86,11 @@ impl Read for ChunkedFile {
             let mut file = File::open(local_path).map_err(|_| ErrorKind::NotFound)?;
             file.seek(SeekFrom::Start(chunk_position))
                 .map_err(|_| ErrorKind::NotSeekable)?;
-            let max_to_read =
-                (buf.len() - currently_read).min(remaining_in_chunk as usize);
+            let max_to_read = (buf.len() - currently_read).min(remaining_in_chunk as usize);
             let mut chunk_bytes_read = 0;
             while chunk_bytes_read < max_to_read {
                 let end = currently_read + max_to_read.min(chunk_bytes_read + buf.len());
-                let bytes_read =
-                    file.read(&mut buf[currently_read + chunk_bytes_read..end])?;
+                let bytes_read = file.read(&mut buf[currently_read + chunk_bytes_read..end])?;
                 if bytes_read == 0 {
                     break;
                 }

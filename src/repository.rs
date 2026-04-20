@@ -4,10 +4,10 @@ use std::fs::File;
 
 use chrono::{DateTime, Utc};
 
-use crate::catalog::{Catalog, Statistics, CATALOG_ROOT_PREFIX};
+use crate::catalog::{CATALOG_ROOT_PREFIX, Catalog, Statistics};
 use crate::common::{
-    compose_object_path, ChunkedFile, CvmfsError, CvmfsResult, FileLike, LAST_REPLICATION_NAME,
-    MANIFEST_NAME, REPLICATING_NAME,
+    ChunkedFile, CvmfsError, CvmfsResult, FileLike, LAST_REPLICATION_NAME, MANIFEST_NAME,
+    REPLICATING_NAME, compose_object_path,
 };
 use crate::directory_entry::{Chunk, DirectoryEntry};
 use crate::fetcher::Fetcher;

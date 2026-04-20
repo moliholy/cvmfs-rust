@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use rusqlite::Row;
 
-use crate::common::{canonicalize_path, split_md5, CvmfsError, CvmfsResult};
+use crate::common::{CvmfsError, CvmfsResult, canonicalize_path, split_md5};
 use crate::database_object::DatabaseObject;
 use crate::directory_entry::{DirectoryEntry, PathHash};
 
