@@ -128,6 +128,7 @@ impl FilesystemMT for CernvmFileSystem {
 			DateTime::from_timestamp(result.mtime, 0).ok_or(CvmfsError::InvalidTimestamp)?;
 		let time = SystemTime::from(date_time);
 		let size = result.size as u64;
+		let nlink = if result.is_directory() { 2 } else { 1 };
 		let file_attr = FileAttr {
 			size,
 			blocks: 1 + size / 512,
@@ -137,11 +138,11 @@ impl FilesystemMT for CernvmFileSystem {
 			crtime: time,
 			kind: map_dirent_type_to_fs_kind(&result),
 			perm: result.mode & 0o7777,
-			nlink: 0,
+			nlink,
 			uid: 0,
 			gid: 0,
-			rdev: 1,
-			flags: result.flags,
+			rdev: 0,
+			flags: 0,
 		};
 		Ok((TTL, file_attr))
 	}

@@ -455,17 +455,18 @@ impl Catalog {
 		while let Some(row) = rows.next()? {
 			let name: String = row.get(0)?;
 			match name.as_str() {
-				"subtree_chunked" => statistics.chunked = row.get(1)?,
-				"subtree_chunked_size" => statistics.chunked_size = row.get(1)?,
-				"subtree_chunks" => statistics.chunks = row.get(1)?,
-				"subtree_dir" => statistics.dir = row.get(1)?,
-				"subtree_external" => statistics.external = row.get(1)?,
-				"subtree_external_file_size" => statistics.external_file_size = row.get(1)?,
-				"subtree_nested" => statistics.nested = row.get(1)?,
-				"subtree_regular" => statistics.regular = row.get(1)?,
-				"subtree_special" => statistics.special = row.get(1)?,
-				"subtree_symlink" => statistics.symlink = row.get(1)?,
-				"subtree_xattr" => statistics.xattr = row.get(1)?,
+				"self_chunked" => statistics.chunked = row.get(1)?,
+				"self_chunked_size" => statistics.chunked_size = row.get(1)?,
+				"self_chunks" => statistics.chunks = row.get(1)?,
+				"self_dir" => statistics.dir = row.get(1)?,
+				"self_external" => statistics.external = row.get(1)?,
+				"self_external_file_size" => statistics.external_file_size = row.get(1)?,
+				"self_file_size" => statistics.file_size = row.get(1)?,
+				"self_nested" => statistics.nested = row.get(1)?,
+				"self_regular" => statistics.regular = row.get(1)?,
+				"self_special" => statistics.special = row.get(1)?,
+				"self_symlink" => statistics.symlink = row.get(1)?,
+				"self_xattr" => statistics.xattr = row.get(1)?,
 				_ => {}
 			}
 		}

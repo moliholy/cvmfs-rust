@@ -60,7 +60,7 @@ impl Repository {
 				.iter()
 				.cloned()
 				.map(|chunk| -> CvmfsResult<(String, Chunk)> {
-					let path = compose_object_path(chunk.content_hash_string().as_str(), "")
+					let path = compose_object_path(chunk.content_hash_string().as_str(), "P")
 						.to_str()
 						.ok_or(CvmfsError::FileNotFound)?
 						.to_string();
