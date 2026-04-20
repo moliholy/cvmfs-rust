@@ -20,20 +20,29 @@
 //! - Eviction: Clearing the cache and rebuilding the structure
 
 use std::{
+	collections::HashMap,
 	fs::{create_dir_all, remove_dir_all},
 	path::{Path, PathBuf},
+	sync::Mutex,
+	time::{Duration, Instant},
 };
 
 use crate::common::{CvmfsError, CvmfsResult};
+
+const DEFAULT_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(5);
 
 /// A cache for storing repository objects locally
 ///
 /// The `Cache` struct manages a local directory structure where CernVM-FS objects
 /// are stored. It provides methods for initialization, file lookup, and cache management.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Cache {
 	/// The root directory where cache files are stored.
 	pub cache_directory: String,
+	ttl: Duration,
+	negative_ttl: Duration,
+	negative_entries: Mutex<HashMap<String, Instant>>,
 }
 
 impl Cache {
@@ -56,7 +65,18 @@ impl Cache {
 	/// Returns `CvmfsError::FileNotFound` if the path cannot be converted to a string.
 	pub fn new(cache_directory: String) -> CvmfsResult<Self> {
 		let path = Path::new(&cache_directory);
-		Ok(Self { cache_directory: path.to_str().ok_or(CvmfsError::FileNotFound)?.into() })
+		Ok(Self {
+			cache_directory: path.to_str().ok_or(CvmfsError::FileNotFound)?.into(),
+			ttl: DEFAULT_TTL,
+			negative_ttl: DEFAULT_NEGATIVE_TTL,
+			negative_entries: Mutex::new(HashMap::new()),
+		})
+	}
+
+	pub fn with_ttl(mut self, ttl: Duration, negative_ttl: Duration) -> Self {
+		self.ttl = ttl;
+		self.negative_ttl = negative_ttl;
+		self
 	}
 
 	/// Initializes the cache directory structure.
@@ -144,11 +164,45 @@ impl Cache {
 	/// Returns an `Option<PathBuf>` containing the path to the file if it exists,
 	/// or `None` if the file is not in the cache.
 	pub fn get(&self, file_name: &str) -> Option<PathBuf> {
-		let path = self.add(file_name).ok()?;
-		if path.is_file() {
-			return Some(path);
+		if self.is_negative_cached(file_name) {
+			return None;
 		}
-		None
+		let path = self.add(file_name).ok()?;
+		if !path.is_file() {
+			return None;
+		}
+		if self.is_expired(&path) {
+			std::fs::remove_file(&path).ok();
+			return None;
+		}
+		Some(path)
+	}
+
+	pub fn record_negative(&self, file_name: &str) {
+		if let Ok(mut entries) = self.negative_entries.lock() {
+			entries.insert(file_name.to_string(), Instant::now());
+		}
+	}
+
+	fn is_negative_cached(&self, file_name: &str) -> bool {
+		let Ok(mut entries) = self.negative_entries.lock() else {
+			return false;
+		};
+		let Some(inserted) = entries.get(file_name) else {
+			return false;
+		};
+		if inserted.elapsed() < self.negative_ttl {
+			return true;
+		}
+		entries.remove(file_name);
+		false
+	}
+
+	fn is_expired(&self, path: &Path) -> bool {
+		path.metadata()
+			.and_then(|m| m.modified())
+			.map(|modified| modified.elapsed().unwrap_or_default() > self.ttl)
+			.unwrap_or(true)
 	}
 
 	/// Clears the cache and re-initializes the directory structure.
@@ -170,6 +224,9 @@ impl Cache {
 		if data_path.exists() && data_path.is_dir() {
 			remove_dir_all(data_path)?;
 			self.initialize()?;
+		}
+		if let Ok(mut entries) = self.negative_entries.lock() {
+			entries.clear();
 		}
 		Ok(())
 	}
@@ -278,6 +335,74 @@ mod tests {
 		let result = cache.get("data/ab/testfile");
 		assert!(result.is_some());
 		assert_eq!(result.unwrap(), file_path);
+
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_negative_entry_blocks_lookup() {
+		let dir = tmp_cache_dir("neg");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap();
+		cache.initialize().unwrap();
+
+		cache.record_negative("data/ab/missing");
+		assert!(cache.get("data/ab/missing").is_none());
+
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_negative_entry_expires() {
+		let dir = tmp_cache_dir("neg_expire");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into())
+			.unwrap()
+			.with_ttl(Duration::from_secs(60), Duration::from_millis(1));
+		cache.initialize().unwrap();
+
+		cache.record_negative("data/ab/willexpire");
+		std::thread::sleep(Duration::from_millis(5));
+
+		let file_path = dir.join("data/ab/willexpire");
+		fs::write(&file_path, b"data").unwrap();
+		assert!(cache.get("data/ab/willexpire").is_some());
+
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_ttl_expired_file_not_returned() {
+		let dir = tmp_cache_dir("ttl_exp");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into())
+			.unwrap()
+			.with_ttl(Duration::from_millis(1), Duration::from_secs(5));
+		cache.initialize().unwrap();
+
+		let file_path = dir.join("data/ab/expired");
+		fs::write(&file_path, b"old data").unwrap();
+		std::thread::sleep(Duration::from_millis(5));
+
+		assert!(cache.get("data/ab/expired").is_none());
+		assert!(!file_path.exists());
+
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_evict_clears_negative_entries() {
+		let dir = tmp_cache_dir("evict_neg");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into()).unwrap();
+		cache.initialize().unwrap();
+
+		cache.record_negative("data/ab/neg");
+		cache.evict().unwrap();
+
+		let file_path = dir.join("data/ab/neg");
+		fs::write(&file_path, b"data").unwrap();
+		assert!(cache.get("data/ab/neg").is_some());
 
 		fs::remove_dir_all(&dir).ok();
 	}
