@@ -4,6 +4,7 @@ pub mod certificate;
 pub mod common;
 pub mod database_object;
 pub mod directory_entry;
+pub mod dns;
 pub mod fetcher;
 pub mod file_system;
 pub mod geo;
