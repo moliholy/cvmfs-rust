@@ -95,20 +95,19 @@ pub struct ChunkedFile {
 
 #[derive(Debug)]
 struct ChunkedFileState {
-	cached_index: Option<usize>,
-	cached_file: Option<File>,
+	open_handles: Vec<Option<File>>,
 	prefetched: HashSet<usize>,
 }
 
 impl ChunkedFile {
 	pub(crate) fn new(chunks: Vec<(String, Chunk)>, size: u64, fetcher: Fetcher) -> Self {
+		let num_chunks = chunks.len();
 		Self {
 			chunks,
 			size,
 			fetcher: Arc::new(fetcher),
 			state: Mutex::new(ChunkedFileState {
-				cached_index: None,
-				cached_file: None,
+				open_handles: (0..num_chunks).map(|_| None).collect(),
 				prefetched: HashSet::new(),
 			}),
 		}
@@ -178,15 +177,13 @@ impl FileLike for ChunkedFile {
 			let remaining_in_chunk = chunk_end - position;
 			let max_to_read = (buf.len() - currently_read).min(remaining_in_chunk as usize);
 
-			let need_open = state.cached_index != Some(index);
-			if need_open {
+			if state.open_handles[index].is_none() {
 				self.prefetch_chunks(index, &mut state);
 				let file = self.open_chunk(index)?;
-				state.cached_index = Some(index);
-				state.cached_file = Some(file);
+				state.open_handles[index] = Some(file);
 			}
 
-			let file = state.cached_file.as_mut().ok_or(ErrorKind::Other)?;
+			let file = state.open_handles[index].as_mut().ok_or(ErrorKind::Other)?;
 			file.seek(SeekFrom::Start(chunk_position))?;
 
 			let dest = &mut buf[currently_read..currently_read + max_to_read];

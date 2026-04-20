@@ -47,7 +47,7 @@ if ! stat "$RUST_MOUNT/testfile" &>/dev/null; then
 fi
 echo "  OK: $RUST_MOUNT"
 
-echo "Mounting C++ cvmfs2..."
+echo "Mounting C++..."
 cat > /tmp/cvmfs_bench.local <<EOF
 CVMFS_CACHE_BASE=$CPP_CACHE
 CVMFS_HTTP_PROXY=DIRECT
@@ -150,7 +150,7 @@ run_bench() {
 print_section() {
     echo ""
     echo "== $1 =="
-    printf "  %-40s %12s %12s  %s\n" "Operation" "Rust" "C++ cvmfs2" "Winner"
+    printf "  %-40s %12s %12s  %s\n" "Operation" "Rust" "C++" "Winner"
     printf "  %s\n" "$(printf -- '-%.0s' {1..85})"
 }
 
@@ -160,7 +160,7 @@ CVMFS2_VERSION=$(cvmfs2 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || ec
 RUST_VERSION=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['packages'][0]['version'])" 2>/dev/null || echo "unknown")
 
 echo ""
-echo "CVMFS Benchmark: Rust v${RUST_VERSION} (FUSE) vs C++ cvmfs2 v${CVMFS2_VERSION} (FUSE)"
+echo "CVMFS Benchmark: Rust v${RUST_VERSION} (FUSE) vs C++ v${CVMFS2_VERSION} (FUSE)"
 echo "Repository: $REPO_FQRN"
 echo "Iterations: $ITERATIONS per operation (after warmup)"
 echo "Rust mount: $RUST_MOUNT"
@@ -277,7 +277,7 @@ echo "C++ wins:  $CPP_WINS/$TOTAL"
 if [ "$RUST_WINS" -gt "$CPP_WINS" ]; then
     echo "Result: Rust is faster overall."
 elif [ "$CPP_WINS" -gt "$RUST_WINS" ]; then
-    echo "Result: C++ cvmfs2 is faster overall."
+    echo "Result: C++ is faster overall."
 else
     echo "Result: Tied."
 fi

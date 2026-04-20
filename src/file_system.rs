@@ -1,4 +1,5 @@
 use std::{
+	cell::RefCell,
 	collections::HashMap,
 	ffi::{OsStr, OsString},
 	path::Path,
@@ -8,6 +9,10 @@ use std::{
 	},
 	time::{Duration, Instant, SystemTime},
 };
+
+thread_local! {
+	static READ_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(128 * 1024));
+}
 
 use chrono::{DateTime, Utc};
 use fuse_mt::{
@@ -261,19 +266,21 @@ impl FilesystemMT for CernvmFileSystem {
 			None => return callback(Err(libc::ENOENT)),
 		};
 
-		let mut data = vec![0u8; size as usize];
-		let bytes_read = match file.read_at(offset, &mut data) {
-			Ok(n) => n,
-			Err(e) => {
-				log::error!("{:?}", e);
-				return callback(Err(match e.raw_os_error() {
-					Some(code) => code,
-					None => libc::EIO,
-				}));
-			}
-		};
-
-		callback(Ok(&data[0..bytes_read]))
+		READ_BUF.with(|buf| {
+			let mut data = buf.borrow_mut();
+			data.resize(size as usize, 0);
+			let bytes_read = match file.read_at(offset, &mut data) {
+				Ok(n) => n,
+				Err(e) => {
+					log::error!("{:?}", e);
+					return callback(Err(match e.raw_os_error() {
+						Some(code) => code,
+						None => libc::EIO,
+					}));
+				}
+			};
+			callback(Ok(&data[0..bytes_read]))
+		})
 	}
 
 	/// Flushes cached file data to storage.
