@@ -30,13 +30,13 @@ use std::{
 	time::Duration,
 };
 
+use compress::zlib;
 use reqwest::blocking::Client;
 
 use crate::{
 	cache::Cache,
 	common::{CvmfsError, CvmfsResult},
 };
-use compress::zlib;
 
 const MAX_DOWNLOAD_SIZE: u64 = 1024 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -141,9 +141,31 @@ impl Fetcher {
 	}
 
 	fn decompress(compressed_bytes: &[u8], cached_file: &str) -> CvmfsResult<()> {
-		let mut decompressed = Vec::new();
-		zlib::Decoder::new(compressed_bytes).read_to_end(&mut decompressed)?;
+		let decompressed = Self::try_decompress_zlib(compressed_bytes)
+			.or_else(|_| Self::try_decompress_zstd(compressed_bytes))
+			.or_else(|_| Self::try_decompress_lz4(compressed_bytes))?;
 		fs::write(cached_file, decompressed)?;
 		Ok(())
+	}
+
+	fn try_decompress_zlib(data: &[u8]) -> CvmfsResult<Vec<u8>> {
+		let mut decompressed = Vec::new();
+		zlib::Decoder::new(data).read_to_end(&mut decompressed)?;
+		Ok(decompressed)
+	}
+
+	fn try_decompress_zstd(data: &[u8]) -> CvmfsResult<Vec<u8>> {
+		let decompressed =
+			zstd::stream::decode_all(data).map_err(|e| CvmfsError::IO(format!("zstd: {e}")))?;
+		Ok(decompressed)
+	}
+
+	fn try_decompress_lz4(data: &[u8]) -> CvmfsResult<Vec<u8>> {
+		let decompressed = lz4_flex::frame::FrameDecoder::new(data);
+		let mut buf = Vec::new();
+		std::io::BufReader::new(decompressed)
+			.read_to_end(&mut buf)
+			.map_err(|e| CvmfsError::IO(format!("lz4: {e}")))?;
+		Ok(buf)
 	}
 }
