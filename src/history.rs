@@ -27,7 +27,7 @@
 //! let rev = history.get_tag_by_revision(42).unwrap();
 //! ```
 
-use crate::common::CvmfsResult;
+use crate::common::{CvmfsError, CvmfsResult};
 use crate::database_object::DatabaseObject;
 use crate::revision_tag::{RevisionTag, SQL_QUERY_DATE, SQL_QUERY_NAME, SQL_QUERY_REVISION};
 
@@ -118,7 +118,7 @@ impl History {
             }
         }
         if schema.ne("1.0") {
-            panic!("Invalid schema {}", schema);
+            return Err(CvmfsError::ParseError);
         }
         Ok(Self {
             database_object,

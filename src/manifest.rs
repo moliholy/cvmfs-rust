@@ -27,11 +27,11 @@ impl Manifest {
 }
 
 impl Manifest {
-    fn parse_boolean(value: &str) -> bool {
+    fn parse_boolean(value: &str) -> CvmfsResult<bool> {
         match value {
-            "yes" => true,
-            "no" => false,
-            _ => panic!("Invalid boolean value: {}", value),
+            "yes" => Ok(true),
+            "no" => Ok(false),
+            _ => Err(CvmfsError::ParseError),
         }
     }
 
@@ -68,8 +68,8 @@ impl Manifest {
                     'S' => revision = value.parse().map_err(|_| CvmfsError::ParseError)?,
                     'N' => repository_name = value.into(),
                     'L' => micro_catalog = value.into(),
-                    'G' => garbage_collectable = Self::parse_boolean(value),
-                    'A' => allows_alternative_name = Self::parse_boolean(value),
+                    'G' => garbage_collectable = Self::parse_boolean(value)?,
+                    'A' => allows_alternative_name = Self::parse_boolean(value)?,
                     _ => {}
                 }
             }
