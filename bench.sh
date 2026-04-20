@@ -9,7 +9,8 @@ REPO_URL="http://cvmfs-stratum-one.cern.ch/opt/boss"
 REPO_FQRN="boss.cern.ch"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUST_BIN="$SCRIPT_DIR/target/release/cvmfs-cli"
-ITERATIONS=50
+RUNS=100
+WARMUP=10
 
 cleanup() {
     umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
@@ -29,6 +30,11 @@ fi
 
 if ! command -v cvmfs2 &>/dev/null; then
     echo "ERROR: cvmfs2 not found"
+    exit 1
+fi
+
+if ! command -v hyperfine &>/dev/null; then
+    echo "ERROR: hyperfine not found (brew install hyperfine)"
     exit 1
 fi
 
@@ -66,7 +72,7 @@ if ! stat "$CPP_MOUNT/testfile" &>/dev/null; then
 fi
 echo "  OK: $CPP_MOUNT"
 
-echo "Warming up..."
+echo "Warming up caches..."
 for p in / /testfile /database /pacman-3.29 /pacman-3.29/setup.csh /slc4_ia32_gcc34 /database/run.db /pacman-latest.tar.gz; do
     stat "${RUST_MOUNT}${p}" &>/dev/null || true
     stat "${CPP_MOUNT}${p}" &>/dev/null || true
@@ -78,37 +84,16 @@ cat "$CPP_MOUNT/testfile" >/dev/null 2>&1
 find "$RUST_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
 find "$CPP_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
 
-# ── Helpers ──
+# ── Benchmark ──
 
-# Time N iterations of a command, return median in nanoseconds.
-# Uses a single python3 process to avoid per-call startup overhead.
-measure() {
-    local cmd="$1"
-    local n="$2"
-    python3 -c "
-import subprocess, time, statistics
-times = []
-for _ in range($n):
-    start = time.monotonic_ns()
-    subprocess.run('$cmd', shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    times.append(time.monotonic_ns() - start)
-print(int(statistics.median(times)))
-"
-}
+CVMFS2_VERSION=$(cvmfs2 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
+RUST_VERSION=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['packages'][0]['version'])" 2>/dev/null || echo "unknown")
 
-fmt_ns() {
-    python3 -c "
-ns = $1
-if ns < 1000:
-    print(f'{ns}ns')
-elif ns < 1_000_000:
-    print(f'{ns/1000:.1f}us')
-elif ns < 1_000_000_000:
-    print(f'{ns/1_000_000:.2f}ms')
-else:
-    print(f'{ns/1_000_000_000:.3f}s')
-"
-}
+echo ""
+echo "CVMFS Benchmark: Rust v${RUST_VERSION} vs C++ v${CVMFS2_VERSION}"
+echo "Repository: $REPO_FQRN"
+echo "Runs: $RUNS per command, warmup: $WARMUP"
+echo ""
 
 RUST_WINS=0
 CPP_WINS=0
@@ -118,55 +103,33 @@ run_bench() {
     local label="$1"
     local rust_cmd="$2"
     local cpp_cmd="$3"
+    local runs="${4:-$RUNS}"
+    local warmup="${5:-$WARMUP}"
+    local json_file="/tmp/bench_result.json"
 
-    local r_med c_med
-    r_med=$(measure "$rust_cmd" "$ITERATIONS")
-    c_med=$(measure "$cpp_cmd" "$ITERATIONS")
+    echo "── $label ──"
+    hyperfine \
+        --runs "$runs" \
+        --warmup "$warmup" \
+        --style basic \
+        --export-json "$json_file" \
+        -n "Rust" "$rust_cmd" \
+        -n "C++" "$cpp_cmd"
+    echo ""
 
-    local winner pct
-    if [ "$r_med" -le "$c_med" ]; then
-        winner="Rust"
+    local rust_mean cpp_mean
+    rust_mean=$(python3 -c "import json;r=json.load(open('$json_file'))['results'];print(r[0]['mean'])")
+    cpp_mean=$(python3 -c "import json;r=json.load(open('$json_file'))['results'];print(r[1]['mean'])")
+
+    if python3 -c "exit(0 if $rust_mean <= $cpp_mean else 1)"; then
         RUST_WINS=$((RUST_WINS + 1))
-        if [ "$r_med" -gt 0 ]; then
-            pct=$(python3 -c "print(f'+{($c_med/$r_med - 1)*100:.0f}%')")
-        else
-            pct="inf"
-        fi
     else
-        winner="C++ "
         CPP_WINS=$((CPP_WINS + 1))
-        if [ "$c_med" -gt 0 ]; then
-            pct=$(python3 -c "print(f'+{($r_med/$c_med - 1)*100:.0f}%')")
-        else
-            pct="inf"
-        fi
     fi
     TOTAL=$((TOTAL + 1))
-
-    printf "  %-40s %12s %12s  %s %s\n" \
-        "$label" "$(fmt_ns "$r_med")" "$(fmt_ns "$c_med")" "$winner" "$pct"
 }
 
-print_section() {
-    echo ""
-    echo "== $1 =="
-    printf "  %-40s %12s %12s  %s\n" "Operation" "Rust" "C++" "Winner"
-    printf "  %s\n" "$(printf -- '-%.0s' {1..85})"
-}
-
-# ── Benchmarks ──
-
-CVMFS2_VERSION=$(cvmfs2 --version 2>&1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' || echo "unknown")
-RUST_VERSION=$(cargo metadata --no-deps --format-version 1 2>/dev/null | python3 -c "import sys,json;print(json.load(sys.stdin)['packages'][0]['version'])" 2>/dev/null || echo "unknown")
-
-echo ""
-echo "CVMFS Benchmark: Rust v${RUST_VERSION} (FUSE) vs C++ v${CVMFS2_VERSION} (FUSE)"
-echo "Repository: $REPO_FQRN"
-echo "Iterations: $ITERATIONS per operation (after warmup)"
-echo "Rust mount: $RUST_MOUNT"
-echo "C++ mount:  $CPP_MOUNT"
-
-print_section "stat"
+# ── stat ──
 run_bench "stat / (root)" \
     "stat $RUST_MOUNT/" \
     "stat $CPP_MOUNT/"
@@ -180,7 +143,7 @@ run_bench "stat symlink" \
     "stat $RUST_MOUNT/pacman-3.29/setup.csh" \
     "stat $CPP_MOUNT/pacman-3.29/setup.csh"
 
-print_section "ls (readdir)"
+# ── readdir ──
 run_bench "ls / (root)" \
     "ls $RUST_MOUNT/" \
     "ls $CPP_MOUNT/"
@@ -194,12 +157,12 @@ run_bench "ls /slc4_ia32_gcc34 (nested catalog)" \
     "ls $RUST_MOUNT/slc4_ia32_gcc34" \
     "ls $CPP_MOUNT/slc4_ia32_gcc34"
 
-print_section "readlink"
+# ── readlink ──
 run_bench "readlink symlink" \
     "readlink $RUST_MOUNT/pacman-3.29/setup.csh" \
     "readlink $CPP_MOUNT/pacman-3.29/setup.csh"
 
-print_section "cat (file read)"
+# ── file read ──
 run_bench "cat /testfile (50 bytes)" \
     "cat $RUST_MOUNT/testfile" \
     "cat $CPP_MOUNT/testfile"
@@ -210,68 +173,56 @@ run_bench "head -c 2 pacman-latest.tar.gz" \
     "head -c 2 $RUST_MOUNT/pacman-latest.tar.gz" \
     "head -c 2 $CPP_MOUNT/pacman-latest.tar.gz"
 
-print_section "dd (seek + read)"
+# ── seek + read ──
 run_bench "dd skip into offlinedb.db" \
-    "dd if=$RUST_MOUNT/database/offlinedb.db bs=64 count=1 skip=100" \
-    "dd if=$CPP_MOUNT/database/offlinedb.db bs=64 count=1 skip=100"
+    "dd if=$RUST_MOUNT/database/offlinedb.db bs=64 count=1 skip=100 2>/dev/null" \
+    "dd if=$CPP_MOUNT/database/offlinedb.db bs=64 count=1 skip=100 2>/dev/null"
 
-print_section "find (recursive traversal)"
+# ── recursive traversal ──
 run_bench "find /pacman-3.29 -maxdepth 1" \
     "find $RUST_MOUNT/pacman-3.29 -maxdepth 1" \
     "find $CPP_MOUNT/pacman-3.29 -maxdepth 1"
 run_bench "find /database -type f" \
     "find $RUST_MOUNT/database -type f" \
     "find $CPP_MOUNT/database -type f"
-
-print_section "wc (full file read + count)"
-run_bench "wc -c /testfile" \
-    "wc -c $RUST_MOUNT/testfile" \
-    "wc -c $CPP_MOUNT/testfile"
-run_bench "wc -c /pacman-latest.tar.gz" \
-    "wc -c $RUST_MOUNT/pacman-latest.tar.gz" \
-    "wc -c $CPP_MOUNT/pacman-latest.tar.gz"
-
-print_section "md5 (hash full file)"
-run_bench "md5 /testfile" \
-    "md5 -q $RUST_MOUNT/testfile" \
-    "md5 -q $CPP_MOUNT/testfile"
-
-print_section "full file read"
-run_bench "cat pacman-latest.tar.gz (full)" \
-    "cat $RUST_MOUNT/pacman-latest.tar.gz" \
-    "cat $CPP_MOUNT/pacman-latest.tar.gz"
-
-print_section "recursive traversal"
-run_bench "find / -maxdepth 3 (all entries)" \
+run_bench "find / -maxdepth 3" \
     "find $RUST_MOUNT -maxdepth 3" \
     "find $CPP_MOUNT -maxdepth 3"
 
-print_section "du (recursive stat)"
-run_bench "du -s / -maxdepth 2" \
-    "du -d 2 -s $RUST_MOUNT" \
-    "du -d 2 -s $CPP_MOUNT"
+# ── full file read ──
+run_bench "wc -c /testfile" \
+    "wc -c $RUST_MOUNT/testfile" \
+    "wc -c $CPP_MOUNT/testfile"
+run_bench "cat pacman-latest.tar.gz" \
+    "cat $RUST_MOUNT/pacman-latest.tar.gz > /dev/null" \
+    "cat $CPP_MOUNT/pacman-latest.tar.gz > /dev/null"
 
-print_section "hash large files"
-run_bench "md5 run.db (chunked, 410MB)" \
-    "md5 -q $RUST_MOUNT/database/run.db" \
-    "md5 -q $CPP_MOUNT/database/run.db"
+# ── hash ──
+run_bench "md5 /testfile" \
+    "md5 -q $RUST_MOUNT/testfile" \
+    "md5 -q $CPP_MOUNT/testfile"
 run_bench "md5 pacman-latest.tar.gz" \
     "md5 -q $RUST_MOUNT/pacman-latest.tar.gz" \
     "md5 -q $CPP_MOUNT/pacman-latest.tar.gz"
 
-# ── Heavy benchmarks (1 iteration, >5s operations) ──
-ITERATIONS=1
+# ── du ──
+run_bench "du -d 2" \
+    "du -d 2 -s $RUST_MOUNT" \
+    "du -d 2 -s $CPP_MOUNT"
 
-print_section "heavy (1 iteration)"
+# ── heavy (fewer runs, long operations) ──
+run_bench "md5 run.db (chunked, 410MB)" \
+    "md5 -q $RUST_MOUNT/database/run.db" \
+    "md5 -q $CPP_MOUNT/database/run.db" \
+    10 2
 run_bench "cat run.db (chunked, 410MB)" \
-    "cat $RUST_MOUNT/database/run.db" \
-    "cat $CPP_MOUNT/database/run.db"
-run_bench "find / -maxdepth 2 -type f" \
-    "find $RUST_MOUNT -maxdepth 2 -type f" \
-    "find $CPP_MOUNT -maxdepth 2 -type f"
+    "cat $RUST_MOUNT/database/run.db > /dev/null" \
+    "cat $CPP_MOUNT/database/run.db > /dev/null" \
+    10 2
 
+# ── Summary ──
 echo ""
-printf '=%.0s' {1..87}; echo ""
+printf '=%.0s' {1..60}; echo ""
 echo "Rust wins: $RUST_WINS/$TOTAL"
 echo "C++ wins:  $CPP_WINS/$TOTAL"
 if [ "$RUST_WINS" -gt "$CPP_WINS" ]; then
