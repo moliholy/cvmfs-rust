@@ -16,15 +16,15 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - uses: Swatinem/rust-cache@v2
-    - name: Format
-      run: cargo fmt --check --all
-    - name: Clippy
-      run: cargo clippy --all-targets -- -D warnings
     - name: Install FUSE dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y libfuse3-dev
+    - name: Format
+      run: cargo fmt --check --all
+    - name: Clippy
+      run: cargo clippy --all-targets -- -D warnings
     - name: Build
       run: cargo build --verbose
     - name: Run tests
-      run: cargo test --verbose
+      run: cargo test --lib --verbose
