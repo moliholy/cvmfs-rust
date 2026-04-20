@@ -264,9 +264,9 @@ print_section "heavy (1 iteration)"
 run_bench "cat run.db (chunked, 410MB)" \
     "cat $RUST_MOUNT/database/run.db" \
     "cat $CPP_MOUNT/database/run.db"
-run_bench "find / -maxdepth 3 -type f" \
-    "find $RUST_MOUNT -maxdepth 3 -type f" \
-    "find $CPP_MOUNT -maxdepth 3 -type f"
+run_bench "find / -maxdepth 2 -type f" \
+    "find $RUST_MOUNT -maxdepth 2 -type f" \
+    "find $CPP_MOUNT -maxdepth 2 -type f"
 
 echo ""
 printf '=%.0s' {1..87}; echo ""
