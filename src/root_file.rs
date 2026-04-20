@@ -79,7 +79,7 @@ impl RootFile {
     /// # Returns
     ///
     /// Returns a `Split<char>` iterator that yields each line of the root file.
-    pub fn lines(&self) -> Split<char> {
+    pub fn lines(&self) -> Split<'_, char> {
         self.contents.split('\n')
     }
 
@@ -117,13 +117,16 @@ impl RootFile {
                 break; // End of file reached
             }
 
-            // Check for termination marker (--)
-            if buffer[..2].eq("--") {
+            if buffer.len() >= 2 && buffer[..2].eq("--") {
                 buffer.clear();
                 bytes_read = reader.read_line(&mut buffer)?;
-                if bytes_read != 41 {
-                    // SHA-1 hash (40 chars) + newline (1 char)
+                if !(bytes_read == 41 || bytes_read == 42) {
                     return Err(CvmfsError::IO("Input does not have 41 bytes".to_string()));
+                }
+                if buffer.len() < 40
+                    || !buffer[..40].chars().all(|c| c.is_ascii_hexdigit())
+                {
+                    return Err(CvmfsError::InvalidRootFileSignature);
                 }
                 checksum = Some(buffer[..40].into());
                 break;
