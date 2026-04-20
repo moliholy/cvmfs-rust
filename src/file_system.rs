@@ -48,6 +48,7 @@ const TTL: Duration = Duration::from_secs(1);
 ///
 /// Returns a `FileType` value that corresponds to the type of the directory entry.
 /// If the entry type cannot be determined, it defaults to `FileType::RegularFile`.
+#[allow(clippy::unnecessary_cast)]
 fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
 	if dirent.is_directory() {
 		FileType::Directory
