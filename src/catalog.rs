@@ -22,14 +22,12 @@
 
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Utc};
-use rusqlite::Row;
-
 use crate::{
 	common::{CvmfsError, CvmfsResult, canonicalize_path, split_md5},
 	database_object::DatabaseObject,
 	directory_entry::{DirectoryEntry, PathHash},
 };
+use chrono::{DateTime, Utc};
 
 /// Prefix used to identify catalog objects in the repository storage.
 ///
@@ -82,7 +80,7 @@ const READ_STATISTICS: &str = "SELECT * FROM statistics ORDER BY counter;";
 /// mount point path, content hash, and size. Nested catalogs are used to
 /// organize the repository into manageable sections for efficient browsing
 /// and synchronization.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CatalogReference {
 	/// The repository path where this catalog is mounted.
 	pub root_path: String,
@@ -118,6 +116,7 @@ pub struct Catalog {
 	pub last_modified: DateTime<Utc>,
 	/// Repository path prefix for entries in this catalog.
 	pub root_prefix: String,
+	nested_cache: Option<Vec<CatalogReference>>,
 }
 
 /// Repository statistics counters.
@@ -211,7 +210,7 @@ impl Catalog {
 		if revision == 0 || schema == 0.0 {
 			return Err(CvmfsError::CatalogInitialization);
 		}
-		Ok(Self {
+		let mut catalog = Self {
 			database,
 			schema,
 			schema_revision,
@@ -220,7 +219,11 @@ impl Catalog {
 			last_modified,
 			root_prefix,
 			previous_revision,
-		})
+			nested_cache: None,
+		};
+		let nested = catalog.list_nested()?;
+		catalog.nested_cache = Some(nested);
+		Ok(catalog)
 	}
 
 	/// Checks if this catalog is the root catalog of the repository.
@@ -347,7 +350,10 @@ impl Catalog {
 	///
 	/// Returns database errors if the nested catalog list cannot be retrieved.
 	pub fn find_nested_for_path(&self, needle_path: &str) -> CvmfsResult<Option<CatalogReference>> {
-		let catalog_refs = self.list_nested()?;
+		let catalog_refs = match &self.nested_cache {
+			Some(cached) => cached.clone(),
+			None => self.list_nested()?,
+		};
 		let mut best_match = None;
 		let mut best_match_score = 0;
 		let real_needle_path = canonicalize_path(needle_path);
@@ -394,7 +400,7 @@ impl Catalog {
 			match rows.next() {
 				Ok(row) => {
 					if let Some(row) = row {
-						result.push(self.make_directory_entry(row)?);
+						result.push(DirectoryEntry::new(row)?);
 					} else {
 						break;
 					}
@@ -471,28 +477,6 @@ impl Catalog {
 			}
 		}
 		Ok(statistics)
-	}
-
-	/// Creates a DirectoryEntry from a database row
-	///
-	/// This helper method constructs a DirectoryEntry object from a database row
-	/// and populates it with chunk information if it represents a chunked file.
-	///
-	/// # Arguments
-	///
-	/// * `row` - A database row containing directory entry data
-	///
-	/// # Returns
-	///
-	/// Returns a `CvmfsResult<DirectoryEntry>` containing the constructed entry.
-	///
-	/// # Errors
-	///
-	/// Returns database errors if the row data is invalid or chunks cannot be read.
-	fn make_directory_entry(&self, row: &Row) -> CvmfsResult<DirectoryEntry> {
-		let mut directory_entry = DirectoryEntry::new(row)?;
-		self.read_chunks(&mut directory_entry)?;
-		Ok(directory_entry)
 	}
 
 	/// Finds and adds the file chunks to a DirectoryEntry.
@@ -589,7 +573,12 @@ impl Catalog {
 		let mut statement = self.database.create_prepared_statement(FIND_MD5_PATH)?;
 		let mut rows = statement.query([path_hash.hash1, path_hash.hash2])?;
 		let row = rows.next()?.ok_or(CvmfsError::FileNotFound)?;
-		self.make_directory_entry(row)
+		DirectoryEntry::new(row)
+	}
+
+	/// Load chunk information for a directory entry.
+	pub fn load_chunks(&self, entry: &mut DirectoryEntry) -> CvmfsResult<()> {
+		self.read_chunks(entry)
 	}
 }
 

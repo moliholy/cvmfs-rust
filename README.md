@@ -18,7 +18,7 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 
 ## Features
 
-- FUSE filesystem mounting via `fuse_mt` (multi-threaded)
+- FUSE filesystem mounting via `fuser`
 - Transparent decompression (zlib, LZ4, Zstd) of content-addressed objects
 - RSA-PKCS1v15 signature verification of repository manifests
 - Whitelist validation (repository name matching + expiry checks)
@@ -34,16 +34,33 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 - Geolocation-based server selection via CVMFS geo API
 - DNS-based repository server discovery via TXT records
 
-## Quick Start
+## Installation
+
+### cargo-binstall (recommended)
+
+```bash
+cargo binstall cvmfs
+```
+
+Pre-built binaries available for:
+- `x86_64-unknown-linux-gnu`
+- `aarch64-unknown-linux-gnu`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+### From source
+
+```bash
+cargo install cvmfs
+```
 
 ### Prerequisites
 
-- Rust (stable)
 - FUSE 3 libraries:
     - **macOS**: [macFUSE](https://macfuse.github.io/) (`brew install --cask macfuse`)
     - **Linux**: `sudo apt install libfuse3-dev` (Debian/Ubuntu) or `sudo dnf install fuse3-devel` (Fedora)
 
-### Build
+### Build from git
 
 ```bash
 git clone https://github.com/moliholy/cvmfs-rust.git
@@ -136,46 +153,46 @@ warmup). Rust cvmfs-cli v0.2.0, C++ cvmfs2 v2.11.5. Repository: `boss.cern.ch`.
 
 ### Metadata operations
 
-| Operation        | Rust  | C++   | Winner   |
-|------------------|-------|-------|----------|
-| stat / (root)    | 4.2ms | 4.3ms | Rust +4% |
-| stat /testfile   | 4.9ms | 4.9ms | Rust +1% |
-| stat /database   | 4.5ms | 4.6ms | Rust +2% |
-| stat symlink     | 5.2ms | 3.8ms | C++ +35% |
+| Operation        | Rust  | C++   | Winner    |
+|------------------|-------|-------|-----------|
+| stat / (root)    | 4.2ms | 4.3ms | Rust +4%  |
+| stat /testfile   | 4.9ms | 4.9ms | Rust +1%  |
+| stat /database   | 4.5ms | 4.6ms | Rust +2%  |
+| stat symlink     | 5.2ms | 3.8ms | C++ +35%  |
 | readlink symlink | 1.0ms | 1.3ms | Rust +21% |
 
 ### Directory listing
 
-| Operation                    | Rust  | C++   | Winner   |
-|------------------------------|-------|-------|----------|
-| ls / (root)                  | 2.3ms | 1.7ms | C++ +35% |
+| Operation                    | Rust  | C++   | Winner    |
+|------------------------------|-------|-------|-----------|
+| ls / (root)                  | 2.3ms | 1.7ms | C++ +35%  |
 | ls /database                 | 1.6ms | 1.8ms | Rust +17% |
 | ls /pacman-3.29              | 1.6ms | 2.1ms | Rust +28% |
-| ls /slc4_ia32_gcc34 (nested) | 1.3ms | 0.7ms | C++ +89% |
+| ls /slc4_ia32_gcc34 (nested) | 1.3ms | 0.7ms | C++ +89%  |
 
 ### File reads
 
-| Operation                         | Rust  | C++   | Winner    |
-|-----------------------------------|-------|-------|-----------|
-| cat /testfile (50B)               | 1.2ms | 1.2ms | Rust +2%  |
+| Operation                         | Rust  | C++   | Winner     |
+|-----------------------------------|-------|-------|------------|
+| cat /testfile (50B)               | 1.2ms | 1.2ms | Rust +2%   |
 | head -c 16 offlinedb.db (chunked) | 1.2ms | 2.3ms | Rust +100% |
-| head -c 2 pacman-latest.tar.gz    | 1.2ms | 0.4ms | C++ +166% |
-| dd seek+read offlinedb.db         | 2.7ms | 2.9ms | Rust +10% |
-| cat pacman-latest.tar.gz (full)   | 1.8ms | 2.3ms | Rust +23% |
+| head -c 2 pacman-latest.tar.gz    | 1.2ms | 0.4ms | C++ +166%  |
+| dd seek+read offlinedb.db         | 2.7ms | 2.9ms | Rust +10%  |
+| cat pacman-latest.tar.gz (full)   | 1.8ms | 2.3ms | Rust +23%  |
 
 ### Recursive traversal
 
-| Operation                     | Rust   | C++    | Winner   |
-|-------------------------------|--------|--------|----------|
+| Operation                     | Rust   | C++    | Winner    |
+|-------------------------------|--------|--------|-----------|
 | find /pacman-3.29 -maxdepth 1 | 1.6ms  | 3.1ms  | Rust +94% |
-| find /database -type f        | 1.3ms  | 1.3ms  | Rust +1% |
-| find / -maxdepth 3            | 16.4ms | 10.3ms | C++ +59% |
-| du -d 2                       | 1.8ms  | 1.8ms  | C++ +3%  |
+| find /database -type f        | 1.3ms  | 1.3ms  | Rust +1%  |
+| find / -maxdepth 3            | 16.4ms | 10.3ms | C++ +59%  |
+| du -d 2                       | 1.8ms  | 1.8ms  | C++ +3%   |
 
 ### Large file I/O (10 runs, 2 warmup)
 
-| Operation                   | Rust   | C++    | Winner  |
-|-----------------------------|--------|--------|---------|
+| Operation                   | Rust   | C++    | Winner   |
+|-----------------------------|--------|--------|----------|
 | md5 run.db (chunked, 410MB) | 643ms  | 694ms  | Rust +8% |
 | cat run.db (chunked, 410MB) | 39.7ms | 41.2ms | Rust +4% |
 

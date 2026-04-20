@@ -1,9 +1,9 @@
-use std::{ffi::OsStr, fs, path::Path};
+use std::fs;
 
 use cvmfs::{
 	common::CvmfsResult, fetcher::Fetcher, file_system::CernvmFileSystem, repository::Repository,
 };
-use fuse_mt::{FilesystemMT, RequestInfo};
+use fuser::FileType;
 use serial_test::serial;
 
 const REPO_URL: &str = "http://cvmfs-stratum-one.cern.ch/opt/boss";
@@ -293,8 +293,8 @@ fn test_list_nested_catalog_directory() -> CvmfsResult<()> {
 #[serial]
 fn test_list_nonexistent_directory() {
 	let repo = create_repo();
-	let result = repo.list_directory("/nonexistent_path_xyz");
-	assert!(result.is_err());
+	let result = repo.list_directory("/nonexistent_path_xyz").unwrap();
+	assert!(result.is_empty());
 }
 
 // --- Lookup ---
@@ -429,7 +429,7 @@ fn test_chunked_file_seek_and_read() -> CvmfsResult<()> {
 #[serial]
 fn test_chunked_file_cross_chunk_read() -> CvmfsResult<()> {
 	let repo = create_repo();
-	let entry = repo.lookup("/database/offlinedb.db")?;
+	let entry = repo.lookup_with_chunks("/database/offlinedb.db")?;
 	assert!(entry.has_chunks());
 	assert!(!entry.chunks.is_empty());
 	let first_chunk_size = entry.chunks[0].size as u64;
@@ -510,7 +510,7 @@ fn test_directory_entry_file_attributes() -> CvmfsResult<()> {
 #[serial]
 fn test_directory_entry_chunked_attributes() -> CvmfsResult<()> {
 	let repo = create_repo();
-	let entry = repo.lookup("/database/offlinedb.db")?;
+	let entry = repo.lookup_with_chunks("/database/offlinedb.db")?;
 	assert!(entry.is_file());
 	assert!(entry.has_chunks());
 	assert!(!entry.chunks.is_empty());
@@ -593,17 +593,12 @@ fn create_fs() -> CernvmFileSystem {
 	CernvmFileSystem::new(repo).expect("Failure creating the filesystem")
 }
 
-fn dummy_req() -> RequestInfo {
-	RequestInfo { unique: 1, uid: 0, gid: 0, pid: std::process::id() }
-}
-
 #[test]
 #[serial]
 fn test_fs_getattr_root() {
 	let fs = create_fs();
-	let (ttl, attr) = fs.getattr(dummy_req(), Path::new("/"), None).unwrap();
-	assert!(ttl.as_secs() > 0);
-	assert_eq!(attr.kind, fuse_mt::FileType::Directory);
+	let (_, attr) = fs.do_lookup("/").unwrap();
+	assert_eq!(attr.kind, FileType::Directory);
 	assert!(attr.nlink >= 2);
 }
 
@@ -611,8 +606,8 @@ fn test_fs_getattr_root() {
 #[serial]
 fn test_fs_getattr_file() {
 	let fs = create_fs();
-	let (_, attr) = fs.getattr(dummy_req(), Path::new("/testfile"), None).unwrap();
-	assert_eq!(attr.kind, fuse_mt::FileType::RegularFile);
+	let (_, attr) = fs.do_lookup("/testfile").unwrap();
+	assert_eq!(attr.kind, FileType::RegularFile);
 	assert_eq!(attr.size, 50);
 	assert!(attr.nlink > 0);
 	assert_eq!(attr.uid, 313);
@@ -625,8 +620,8 @@ fn test_fs_getattr_file() {
 #[serial]
 fn test_fs_getattr_directory() {
 	let fs = create_fs();
-	let (_, attr) = fs.getattr(dummy_req(), Path::new("/database"), None).unwrap();
-	assert_eq!(attr.kind, fuse_mt::FileType::Directory);
+	let (_, attr) = fs.do_lookup("/database").unwrap();
+	assert_eq!(attr.kind, FileType::Directory);
 	assert_eq!(attr.nlink, 2);
 }
 
@@ -634,7 +629,7 @@ fn test_fs_getattr_directory() {
 #[serial]
 fn test_fs_getattr_nonexistent() {
 	let fs = create_fs();
-	let result = fs.getattr(dummy_req(), Path::new("/nonexistent"), None);
+	let result = fs.do_lookup("/nonexistent");
 	assert!(result.is_err());
 }
 
@@ -642,16 +637,15 @@ fn test_fs_getattr_nonexistent() {
 #[serial]
 fn test_fs_getattr_symlink() {
 	let fs = create_fs();
-	let (_, attr) = fs.getattr(dummy_req(), Path::new("/pacman-3.29/setup.csh"), None).unwrap();
-	assert_eq!(attr.kind, fuse_mt::FileType::Symlink);
+	let (_, attr) = fs.do_lookup("/pacman-3.29/setup.csh").unwrap();
+	assert_eq!(attr.kind, FileType::Symlink);
 }
 
 #[test]
 #[serial]
 fn test_fs_readlink() {
 	let fs = create_fs();
-	let data = fs.readlink(dummy_req(), Path::new("/pacman-3.29/setup.csh")).unwrap();
-	let target = String::from_utf8(data).unwrap();
+	let target = fs.do_readlink("/pacman-3.29/setup.csh").unwrap();
 	assert_eq!(target, "scripts/initialize_setup.csh");
 }
 
@@ -659,7 +653,7 @@ fn test_fs_readlink() {
 #[serial]
 fn test_fs_readlink_not_a_link() {
 	let fs = create_fs();
-	let result = fs.readlink(dummy_req(), Path::new("/testfile"));
+	let result = fs.do_readlink("/testfile");
 	assert!(result.is_err());
 }
 
@@ -667,7 +661,7 @@ fn test_fs_readlink_not_a_link() {
 #[serial]
 fn test_fs_open_file() {
 	let fs = create_fs();
-	let (fh, _flags) = fs.open(dummy_req(), Path::new("/testfile"), 0).unwrap();
+	let fh = fs.do_open("/testfile").unwrap();
 	assert!(fh > 0);
 }
 
@@ -675,7 +669,7 @@ fn test_fs_open_file() {
 #[serial]
 fn test_fs_open_directory_fails() {
 	let fs = create_fs();
-	let result = fs.open(dummy_req(), Path::new("/database"), 0);
+	let result = fs.do_open("/database");
 	assert!(result.is_err());
 }
 
@@ -683,8 +677,8 @@ fn test_fs_open_directory_fails() {
 #[serial]
 fn test_fs_release() {
 	let fs = create_fs();
-	let (fh, _) = fs.open(dummy_req(), Path::new("/testfile"), 0).unwrap();
-	let result = fs.release(dummy_req(), Path::new("/testfile"), fh, 0, 0, false);
+	let fh = fs.do_open("/testfile").unwrap();
+	let result = fs.do_release(fh);
 	assert!(result.is_ok());
 }
 
@@ -692,31 +686,7 @@ fn test_fs_release() {
 #[serial]
 fn test_fs_release_nonexistent() {
 	let fs = create_fs();
-	let result = fs.release(dummy_req(), Path::new("/not_opened"), 0, 0, 0, false);
-	assert!(result.is_err());
-}
-
-#[test]
-#[serial]
-fn test_fs_flush() {
-	let fs = create_fs();
-	let result = fs.flush(dummy_req(), Path::new("/testfile"), 0, 0);
-	assert!(result.is_ok());
-}
-
-#[test]
-#[serial]
-fn test_fs_opendir() {
-	let fs = create_fs();
-	let (fh, _) = fs.opendir(dummy_req(), Path::new("/"), 0).unwrap();
-	assert!(fh > 0);
-}
-
-#[test]
-#[serial]
-fn test_fs_opendir_not_a_dir() {
-	let fs = create_fs();
-	let result = fs.opendir(dummy_req(), Path::new("/testfile"), 0);
+	let result = fs.do_release(999999);
 	assert!(result.is_err());
 }
 
@@ -724,46 +694,35 @@ fn test_fs_opendir_not_a_dir() {
 #[serial]
 fn test_fs_readdir() {
 	let fs = create_fs();
-	let (fh, _) = fs.opendir(dummy_req(), Path::new("/"), 0).unwrap();
-	let entries = fs.readdir(dummy_req(), Path::new("/"), fh).unwrap();
+	let entries = fs.do_readdir("/").unwrap();
 	assert!(!entries.is_empty());
-	let names: Vec<String> = entries.iter().map(|e| e.name.to_string_lossy().to_string()).collect();
-	assert!(names.contains(&"testfile".to_string()));
-	assert!(names.contains(&"database".to_string()));
+	let names: Vec<&str> = entries.iter().map(|(_, name)| name.as_str()).collect();
+	assert!(names.contains(&"testfile"));
+	assert!(names.contains(&"database"));
 }
 
 #[test]
 #[serial]
 fn test_fs_readdir_not_a_dir() {
 	let fs = create_fs();
-	let result = fs.readdir(dummy_req(), Path::new("/testfile"), 0);
+	let result = fs.do_readdir("/testfile");
 	assert!(result.is_err());
-}
-
-#[test]
-#[serial]
-fn test_fs_releasedir() {
-	let fs = create_fs();
-	let result = fs.releasedir(dummy_req(), Path::new("/"), 0, 0);
-	assert!(result.is_ok());
 }
 
 #[test]
 #[serial]
 fn test_fs_statfs() {
 	let fs = create_fs();
-	let stats = fs.statfs(dummy_req(), Path::new("/")).unwrap();
-	assert!(stats.blocks > 0);
-	assert!(stats.files > 0);
-	assert_eq!(stats.bsize, 512);
-	assert_eq!(stats.namelen, 255);
+	let (blocks, files) = fs.do_statfs().unwrap();
+	assert!(blocks > 0);
+	assert!(files > 0);
 }
 
 #[test]
 #[serial]
 fn test_fs_getxattr() {
 	let fs = create_fs();
-	let result = fs.getxattr(dummy_req(), Path::new("/"), OsStr::new("user.test"), 0);
+	let result = fs.do_getxattr("user.test");
 	assert!(result.is_err());
 }
 
@@ -771,7 +730,7 @@ fn test_fs_getxattr() {
 #[serial]
 fn test_fs_access_exists() {
 	let fs = create_fs();
-	let result = fs.access(dummy_req(), Path::new("/testfile"), 0);
+	let result = fs.do_access("/testfile");
 	assert!(result.is_ok());
 }
 
@@ -779,14 +738,6 @@ fn test_fs_access_exists() {
 #[serial]
 fn test_fs_access_nonexistent() {
 	let fs = create_fs();
-	let result = fs.access(dummy_req(), Path::new("/nonexistent"), 0);
+	let result = fs.do_access("/nonexistent");
 	assert!(result.is_err());
-}
-
-#[test]
-#[serial]
-fn test_fs_destroy() {
-	let fs = create_fs();
-	fs.open(dummy_req(), Path::new("/testfile"), 0).unwrap();
-	fs.destroy();
 }

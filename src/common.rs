@@ -261,6 +261,8 @@ pub enum CvmfsError {
 	Generic(String),
 	#[error("The path is not a file")]
 	NotAFile,
+	#[error("The path is not a symlink")]
+	NotASymlink,
 }
 
 impl From<String> for CvmfsError {

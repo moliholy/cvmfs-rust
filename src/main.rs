@@ -22,7 +22,7 @@
 //! cvmfs-cli http://cvmfs-stratum-one.cern.ch/opt/boss /mnt/cvmfs /var/cache/cvmfs
 //! ```
 
-use std::{env, ffi::OsStr, path::PathBuf};
+use std::{env, path::PathBuf};
 
 use cvmfs::{fetcher::Fetcher, file_system::CernvmFileSystem, repository::Repository};
 
@@ -60,11 +60,7 @@ fn main() {
 	let repository = Repository::new(fetcher).expect("Failure creating the repository");
 	let file_system = CernvmFileSystem::new(repository).expect("Failure creating the file system");
 
-	let fuse_args = [OsStr::new("-o"), OsStr::new("fsname=cernvmfs")];
-	fuse_mt::mount(
-		fuse_mt::FuseMT::new(file_system, 5),
-		mountpoint.to_str().expect("Invalid mount point string"),
-		&fuse_args[..],
-	)
-	.expect("Could not mount the file system in the mountpoint");
+	file_system
+		.mount(mountpoint.to_str().expect("Invalid mount point string"))
+		.expect("Could not mount the file system");
 }

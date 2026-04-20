@@ -30,7 +30,7 @@ x509-certificate = "0.25"
 rusqlite = { version = "0.39", features = ["blob"] }
 
 # Filesystem integration
-fuse_mt = "0.6"
+fuser = "0.11"
 libc = "0.2"
 
 # Network and HTTP
@@ -47,6 +47,11 @@ env_logger = "0.11"
 rsa = { version = "0.9.10", features = ["sha1"] }
 lz4_flex = "0.13.0"
 zstd = "0.13.3"
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
 
 [profile.release]
 opt-level = 3

@@ -1,0 +1,66 @@
+name: Build release binaries
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - uses: dtolnay/rust-toolchain@stable
+      with:
+        targets: ${{ matrix.target }}
+
+    - uses: Swatinem/rust-cache@v2
+      with:
+        key: ${{ matrix.target }}
+
+    - name: Install FUSE dependencies (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libfuse3-dev
+
+    - name: Install cross-compilation tools (aarch64-linux)
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: |
+        sudo apt-get install -y gcc-aarch64-linux-gnu
+        echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+
+    - name: Install macFUSE (macOS)
+      if: runner.os == 'macOS'
+      run: brew install macfuse
+
+    - name: Build
+      run: cargo build --release --target ${{ matrix.target }}
+
+    - name: Package
+      shell: bash
+      run: |
+        cd target/${{ matrix.target }}/release
+        tar czf ../../../cvmfs-cli-${{ matrix.target }}.tar.gz cvmfs-cli
+        cd ../../..
+
+    - name: Upload to release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: gh release upload ${{ github.event.release.tag_name }} cvmfs-cli-${{ matrix.target }}.tar.gz

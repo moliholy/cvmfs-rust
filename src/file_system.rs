@@ -1,8 +1,7 @@
 use std::{
 	cell::RefCell,
 	collections::HashMap,
-	ffi::{OsStr, OsString},
-	path::Path,
+	ffi::OsStr,
 	sync::{
 		Arc, Mutex, RwLock,
 		atomic::{AtomicU64, Ordering},
@@ -10,18 +9,11 @@ use std::{
 	time::{Duration, Instant, SystemTime},
 };
 
-thread_local! {
-	static READ_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(128 * 1024));
-}
-
 use chrono::{DateTime, Utc};
-use fuse_mt::{
-	CallbackResult, DirectoryEntry as FuseDirectoryEntry, FileAttr, FileType, FilesystemMT,
-	RequestInfo, ResultData, ResultEmpty, ResultEntry, ResultOpen, ResultReaddir, ResultSlice,
-	ResultStatfs, ResultXattr, Statfs,
+use fuser::{
+	FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
+	ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request,
 };
-
-static NEXT_DIR_FD: AtomicU64 = AtomicU64::new(0x1000);
 
 use crate::{
 	common::{CvmfsError, CvmfsResult, FileLike},
@@ -29,31 +21,18 @@ use crate::{
 	repository::Repository,
 };
 
+thread_local! {
+	static READ_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(128 * 1024));
+}
+
 const FOPEN_KEEP_CACHE: u32 = 0x02;
-
-/// Time-to-live duration for file attributes in the FUSE interface.
-///
-/// This constant defines how long the operating system should cache file attributes
-/// before requesting them again from the filesystem. A short TTL ensures that changes
-/// to the repository are quickly reflected in the mounted filesystem, at the cost of
-/// more frequent attribute requests. In CernVM-FS, a 1-second TTL provides a good
-/// balance between performance and freshness.
 const TTL: Duration = Duration::from_secs(3600);
+const FUSE_ROOT_ID: u64 = 1;
 
-/// Maps a CernVM-FS directory entry type to a FUSE file type
-///
-/// This function converts from the CernVM-FS internal directory entry type representation
-/// to the corresponding FUSE file type. This mapping is necessary to present the correct
-/// file type information to the operating system through the FUSE interface.
-///
-/// # Arguments
-///
-/// * `dirent` - A reference to a `DirectoryEntry` whose type should be mapped.
-///
-/// # Returns
-///
-/// Returns a `FileType` value that corresponds to the type of the directory entry.
-/// If the entry type cannot be determined, it defaults to `FileType::RegularFile`.
+type DirListing = Vec<(u64, FileType, String)>;
+
+static NEXT_FH: AtomicU64 = AtomicU64::new(1);
+
 #[allow(clippy::unnecessary_cast)]
 fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
 	if dirent.is_directory() {
@@ -73,451 +52,358 @@ fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
 	}
 }
 
-/// FUSE filesystem implementation for CernVM-FS.
-///
-/// This struct implements the `FilesystemMT` trait from the `fuse_mt` crate,
-/// providing filesystem operations for a CernVM-FS repository. It handles operations
-/// like reading files, listing directories, and retrieving file attributes by delegating
-/// to an underlying `Repository` instance.
-///
-/// The implementation uses `RwLock` to protect shared data, allowing concurrent read
-/// operations while ensuring exclusive access for write operations.
-#[derive(Debug)]
-pub struct CernvmFileSystem {
-	/// The repository instance, protected by a read-write lock.
-	///
-	/// This field stores the CernVM-FS repository that contains all the file metadata
-	/// and content. The `RwLock` allows multiple concurrent readers or a single writer,
-	/// enabling thread-safe access to the repository data. The repository handles catalog
-	/// management, file content retrieval, and metadata operations.
-	repository: RwLock<Repository>,
-
-	/// Map of currently opened files, keyed by path string.
-	///
-	/// This field maintains a mapping from file paths to their corresponding file handles.
-	/// When a file is opened, its FileLike implementation is stored in this map and can be
-	/// retrieved for subsequent read operations. The `RwLock` ensures thread-safe access
-	/// to the map, allowing multiple threads to safely open and close files concurrently.
-	opened_files: RwLock<HashMap<String, Box<dyn FileLike>>>,
-	cached_statfs: Mutex<Option<(Instant, Statfs)>>,
-	lookup_cache: RwLock<HashMap<String, Arc<DirectoryEntry>>>,
-	readdir_cache: RwLock<HashMap<String, Vec<FuseDirectoryEntry>>>,
+fn make_file_attr(ino: u64, entry: &DirectoryEntry) -> Option<FileAttr> {
+	let time = SystemTime::from(DateTime::<Utc>::from_timestamp(entry.mtime, 0)?);
+	let size = entry.size as u64;
+	Some(FileAttr {
+		ino,
+		size,
+		blocks: 1 + size / 512,
+		atime: time,
+		mtime: time,
+		ctime: time,
+		crtime: time,
+		kind: map_dirent_type_to_fs_kind(entry),
+		perm: entry.mode & 0o7777,
+		nlink: entry.nlink(),
+		uid: entry.uid,
+		gid: entry.gid,
+		rdev: 0,
+		blksize: 512,
+		flags: 0,
+	})
 }
 
-/// Implementation of the FUSE multi-threaded filesystem interface.
-///
-/// This implementation translates FUSE filesystem operations into operations on the
-/// CernVM-FS repository. It handles operations like reading files, listing directories,
-/// retrieving file attributes, and managing file handles.
-impl FilesystemMT for CernvmFileSystem {
-	/// Cleans up resources when the filesystem is being unmounted.
-	///
-	/// This method is called when the filesystem is being unmounted. It closes all
-	/// open files and performs any necessary cleanup.
-	fn destroy(&self) {
-		if let Ok(mut f) = self.opened_files.write() {
-			f.drain();
+#[derive(Debug)]
+struct InodeTable {
+	next_ino: AtomicU64,
+	path_to_ino: RwLock<HashMap<String, u64>>,
+	ino_to_path: RwLock<HashMap<u64, String>>,
+}
+
+impl InodeTable {
+	fn new() -> Self {
+		let mut path_to_ino = HashMap::new();
+		let mut ino_to_path = HashMap::new();
+		path_to_ino.insert(String::new(), FUSE_ROOT_ID);
+		ino_to_path.insert(FUSE_ROOT_ID, String::new());
+		Self {
+			next_ino: AtomicU64::new(2),
+			path_to_ino: RwLock::new(path_to_ino),
+			ino_to_path: RwLock::new(ino_to_path),
+		}
+	}
+
+	fn get_or_insert(&self, path: &str) -> u64 {
+		if let Some(ino) = self.path_to_ino.read().ok().and_then(|m| m.get(path).copied()) {
+			return ino;
+		}
+		let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
+		if let (Ok(mut p2i), Ok(mut i2p)) = (self.path_to_ino.write(), self.ino_to_path.write()) {
+			if let Some(&existing) = p2i.get(path) {
+				return existing;
+			}
+			p2i.insert(path.into(), ino);
+			i2p.insert(ino, path.into());
+		}
+		ino
+	}
+
+	fn get_path(&self, ino: u64) -> Option<String> {
+		self.ino_to_path.read().ok()?.get(&ino).cloned()
+	}
+}
+
+/// Filesystem statistics cached value
+#[derive(Debug, Clone, Copy)]
+struct CachedStatfs {
+	blocks: u64,
+	files: u64,
+}
+
+/// FUSE filesystem implementation for CernVM-FS using fuser directly.
+#[derive(Debug)]
+pub struct CernvmFileSystem {
+	repository: RwLock<Repository>,
+	inodes: InodeTable,
+	opened_files: RwLock<HashMap<u64, Box<dyn FileLike>>>,
+	opened_dirs: RwLock<HashMap<u64, DirListing>>,
+	lookup_cache: RwLock<HashMap<String, Arc<DirectoryEntry>>>,
+	cached_statfs: Mutex<Option<(Instant, CachedStatfs)>>,
+}
+
+impl Filesystem for CernvmFileSystem {
+	fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+		let name = match name.to_str() {
+			Some(n) => n,
+			None => return reply.error(libc::ENOENT),
 		};
-	}
-
-	/// Retrieves file attributes for a given path.
-	///
-	/// This method looks up file attributes (size, permissions, timestamps, etc.) for
-	/// the file or directory at the specified path. It translates the repository
-	/// metadata into FUSE file attributes that can be presented to the operating system.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the file or directory.
-	/// * `_fh` - Optional file handle for an open file.
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultEntry` containing the file attributes and TTL, or an error code.
-	/// if the operation failed.
-	fn getattr(&self, _req: RequestInfo, path: &Path, _fh: Option<u64>) -> ResultEntry {
-		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
-		log::info!("Getting attribute of path: {path}");
-		let result = self.cached_lookup(path)?;
-		let date_time: DateTime<Utc> =
-			DateTime::from_timestamp(result.mtime, 0).ok_or(CvmfsError::InvalidTimestamp)?;
-		let time = SystemTime::from(date_time);
-		let size = result.size as u64;
-		let nlink = result.nlink();
-		let file_attr = FileAttr {
-			size,
-			blocks: 1 + size / 512,
-			atime: time,
-			mtime: time,
-			ctime: time,
-			crtime: time,
-			kind: map_dirent_type_to_fs_kind(&result),
-			perm: result.mode & 0o7777,
-			nlink,
-			uid: result.uid,
-			gid: result.gid,
-			rdev: 0,
-			flags: 0,
-		};
-		Ok((TTL, file_attr))
-	}
-
-	/// Reads the target of a symbolic link.
-	///
-	/// This method retrieves the path that a symbolic link points to. It first verifies
-	/// that the specified path is indeed a symbolic link before returning its target.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request
-	/// * `path` - The path to the symbolic link
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultData` containing the bytes of the symlink target, or an error
-	/// code if the operation failed.
-	fn readlink(&self, _req: RequestInfo, path: &Path) -> ResultData {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Reading link: {path}");
-		if let Some(target) = self
-			.lookup_cache
-			.read()
-			.ok()
-			.and_then(|c| c.get(path).cloned())
-			.filter(|e| e.is_symlink())
-			.and_then(|e| e.symlink.clone())
-		{
-			return Ok(target.into_bytes());
-		}
-		let result = self.cached_lookup(path)?;
-		if !result.is_symlink() {
-			return Err(libc::ENOLINK);
-		}
-		Ok(result.symlink.as_ref().ok_or(libc::ENOLINK)?.clone().into_bytes())
-	}
-
-	/// Opens a file and returns a file handle
-	///
-	/// This method opens a file for reading, returning a file handle that can be used
-	/// in subsequent read operations. It verifies that the path refers to a regular file
-	/// before opening it.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request
-	/// * `path` - The path to the file to open
-	/// * `_flags` - Flags specifying how the file should be opened
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultOpen` containing the file handle and flags, or an error code
-	/// if the operation failed.
-	fn open(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
-		let path = path.to_str().ok_or(CvmfsError::FileNotFound)?;
-		log::info!("Opening file: {path}");
-		let entry = self.cached_lookup(path)?;
-		if !entry.is_file() {
-			return Err(libc::ENOENT);
-		}
-		let repo = self.repository.read().map_err(|_| CvmfsError::Sync)?;
-		let file = repo.retrieve_object(&entry, path)?;
-		let fd = file.as_raw_fd() as u64;
-		drop(repo);
-		self.opened_files
-			.write()
-			.map_err(|_| CvmfsError::Sync)?
-			.insert(path.into(), file);
-		Ok((fd, FOPEN_KEEP_CACHE))
-	}
-
-	/// Reads data from an open file.
-	///
-	/// This method reads a specified amount of data from an open file, starting at the
-	/// given offset. It uses the file handle to look up the file object in the opened
-	/// files map, then reads the requested data and passes it to the callback function.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the file.
-	/// * `_fh` - The file handle returned by `open`.
-	/// * `offset` - The offset into the file where reading should begin.
-	/// * `size` - The number of bytes to read.
-	/// * `callback` - A callback function that will be called with the read data.
-	///
-	/// # Returns
-	///
-	/// Returns a `CallbackResult` from the callback function, or an error if the
-	/// operation failed.
-	fn read(
-		&self,
-		_req: RequestInfo,
-		path: &Path,
-		_fh: u64,
-		offset: u64,
-		size: u32,
-		callback: impl FnOnce(ResultSlice<'_>) -> CallbackResult,
-	) -> CallbackResult {
-		let path = match path.to_str() {
+		let parent_path = match self.inodes.get_path(parent) {
 			Some(p) => p,
-			None => return callback(Err(libc::ENOENT)),
+			None => return reply.error(libc::ENOENT),
 		};
-		log::info!("Reading file: {path}");
+		let child_path = if parent_path.is_empty() {
+			format!("/{name}")
+		} else {
+			format!("{parent_path}/{name}")
+		};
+		let entry = match self.cached_lookup(&child_path) {
+			Ok(e) => e,
+			Err(_) => return reply.error(libc::ENOENT),
+		};
+		let ino = self.inodes.get_or_insert(&child_path);
+		match make_file_attr(ino, &entry) {
+			Some(attr) => reply.entry(&TTL, &attr, 0),
+			None => reply.error(libc::EIO),
+		}
+	}
+
+	fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
+		let path = match self.inodes.get_path(ino) {
+			Some(p) => p,
+			None => return reply.error(libc::ENOENT),
+		};
+		let cvmfs_path = if path.is_empty() { "" } else { &path };
+		let entry = match self.cached_lookup(cvmfs_path) {
+			Ok(e) => e,
+			Err(_) => return reply.error(libc::ENOENT),
+		};
+		match make_file_attr(ino, &entry) {
+			Some(attr) => reply.attr(&TTL, &attr),
+			None => reply.error(libc::EIO),
+		}
+	}
+
+	fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
+		let path = match self.inodes.get_path(ino) {
+			Some(p) => p,
+			None => return reply.error(libc::ENOENT),
+		};
+		let entry = match self.cached_lookup(&path) {
+			Ok(e) => e,
+			Err(_) => return reply.error(libc::ENOENT),
+		};
+		if !entry.is_symlink() {
+			return reply.error(libc::EINVAL);
+		}
+		match &entry.symlink {
+			Some(target) => reply.data(target.as_bytes()),
+			None => reply.error(libc::EIO),
+		}
+	}
+
+	fn open(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+		let path = match self.inodes.get_path(ino) {
+			Some(p) => p,
+			None => return reply.error(libc::ENOENT),
+		};
+		let entry = match self.cached_lookup(&path) {
+			Ok(e) => e,
+			Err(_) => return reply.error(libc::ENOENT),
+		};
+		if !entry.is_file() {
+			return reply.error(libc::EISDIR);
+		}
+		let repo = match self.repository.read() {
+			Ok(r) => r,
+			Err(_) => return reply.error(libc::EIO),
+		};
+		let file = match repo.retrieve_object(&entry, &path) {
+			Ok(f) => f,
+			Err(_) => return reply.error(libc::EIO),
+		};
+		drop(repo);
+		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
+		if let Ok(mut files) = self.opened_files.write() {
+			files.insert(fh, file);
+		}
+		reply.opened(fh, FOPEN_KEEP_CACHE);
+	}
+
+	fn read(
+		&mut self,
+		_req: &Request<'_>,
+		_ino: u64,
+		fh: u64,
+		offset: i64,
+		size: u32,
+		_flags: i32,
+		_lock_owner: Option<u64>,
+		reply: ReplyData,
+	) {
 		let opened_files = match self.opened_files.read() {
 			Ok(guard) => guard,
-			Err(e) => {
-				log::error!("{:?}", e);
-				return callback(Err(libc::EIO));
-			}
+			Err(_) => return reply.error(libc::EIO),
 		};
-		let file = match opened_files.get(path) {
+		let file = match opened_files.get(&fh) {
 			Some(f) => f,
-			None => return callback(Err(libc::ENOENT)),
+			None => return reply.error(libc::EBADF),
 		};
-
 		READ_BUF.with(|buf| {
 			let mut data = buf.borrow_mut();
 			data.resize(size as usize, 0);
-			let bytes_read = match file.read_at(offset, &mut data) {
-				Ok(n) => n,
-				Err(e) => {
-					log::error!("{:?}", e);
-					return callback(Err(match e.raw_os_error() {
-						Some(code) => code,
-						None => libc::EIO,
-					}));
-				}
-			};
-			callback(Ok(&data[0..bytes_read]))
-		})
+			match file.read_at(offset as u64, &mut data) {
+				Ok(n) => reply.data(&data[..n]),
+				Err(_) => reply.error(libc::EIO),
+			}
+		});
 	}
 
-	/// Flushes cached file data to storage.
-	///
-	/// This method is called when the file system should flush any cached data for a
-	/// specific file to storage. Since CernVM-FS is a read-only filesystem, this
-	/// operation is essentially a no-op, but we still log it for debugging purposes.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the file.
-	/// * `_fh` - The file handle.
-	/// * `_lock_owner` - The lock owner ID.
-	///
-	/// # Returns
-	///
-	/// Returns `Ok(())` if successful, or an error code otherwise.
-	fn flush(&self, _req: RequestInfo, path: &Path, _fh: u64, _lock_owner: u64) -> ResultEmpty {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Flushing file: {path}");
-		Ok(())
-	}
-
-	/// Releases an open file.
-	///
-	/// This method is called when a file descriptor is closed. It removes the file from
-	/// the opened files map, effectively closing the file and releasing its resources.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the file.
-	/// * `_fh` - The file handle.
-	/// * `_flags` - The flags the file was opened with.
-	/// * `_lock_owner` - The lock owner ID.
-	/// * `_flush` - Whether to flush data before releasing.
-	///
-	/// # Returns
-	///
-	/// Returns `Ok(())` if successful, or an error code otherwise.
 	fn release(
-		&self,
-		_req: RequestInfo,
-		path: &Path,
-		_fh: u64,
-		_flags: u32,
-		_lock_owner: u64,
+		&mut self,
+		_req: &Request<'_>,
+		_ino: u64,
+		fh: u64,
+		_flags: i32,
+		_lock_owner: Option<u64>,
 		_flush: bool,
-	) -> ResultEmpty {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Releasing: {path}");
-		match self
-			.opened_files
-			.write()
-			.map_err(|e| {
-				log::error!("{:?}", e);
-				libc::EIO
-			})?
-			.remove(path)
-		{
-			None => Err(libc::ENOENT),
-			Some(_) => Ok(()),
+		reply: ReplyEmpty,
+	) {
+		if let Ok(mut files) = self.opened_files.write() {
+			files.remove(&fh);
 		}
+		reply.ok();
 	}
 
-	/// Opens a directory for reading.
-	///
-	/// This method verifies that the path refers to a directory and prepares it for
-	/// listing. Since directory entries in CernVM-FS are retrieved by path rather than
-	/// by a file descriptor, this method mainly just verifies that the directory exists.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the directory.
-	/// * `_flags` - The flags the directory should be opened with.
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultOpen` containing a file handle and flags, or an error code
-	/// if the operation failed.
-	fn opendir(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Opening directory: {path}");
-		let result = self.cached_lookup(path)?;
-		if !result.is_directory() {
-			return Err(libc::ENOENT);
-		}
-		let fd = NEXT_DIR_FD.fetch_add(1, Ordering::Relaxed);
-		Ok((fd, 0))
-	}
-
-	/// Reads the contents of a directory.
-	///
-	/// This method retrieves the list of entries in a directory, converting them to
-	/// FUSE directory entries that can be presented to the operating system.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the directory.
-	/// * `_fh` - The file handle returned by `opendir`.
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultReaddir` containing a vector of directory entries, or an error
-	/// code if the operation failed.
-	fn readdir(&self, _req: RequestInfo, path: &Path, _fh: u64) -> ResultReaddir {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Reading directory: {path}");
-		if let Some(entries) = self.readdir_cache.read().ok().and_then(|c| c.get(path).cloned()) {
-			return Ok(entries);
-		}
-		let repo = self.repository.read().map_err(|_| libc::EIO)?;
-		match repo.list_directory(path) {
-			Ok(entries) => {
-				drop(repo);
-				if let Ok(mut cache) = self.lookup_cache.write() {
-					for entry in &entries {
-						let child_path = if path == "/" {
-							format!("/{}", entry.name)
-						} else {
-							format!("{}/{}", path, entry.name)
-						};
-						cache.insert(child_path, Arc::new(entry.clone()));
-					}
-				}
-				let fuse_entries: Vec<FuseDirectoryEntry> = entries
-					.into_iter()
-					.map(|dirent| FuseDirectoryEntry {
-						kind: map_dirent_type_to_fs_kind(&dirent),
-						name: OsString::from(dirent.name),
-					})
-					.collect();
-				if let Ok(mut cache) = self.readdir_cache.write() {
-					cache.insert(path.into(), fuse_entries.clone());
-				}
-				Ok(fuse_entries)
-			}
-			Err(e) => {
-				log::error!("Could not list directory {path}: {:?}", e);
-				Err(e.into())
-			}
-		}
-	}
-
-	/// Releases a directory.
-	///
-	/// This method is called when a directory handle is closed. Since CernVM-FS doesn't
-	/// need to track open directories specifically, this is a no-op.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `_path` - The path to the directory.
-	/// * `_fh` - The file handle.
-	/// * `_flags` - The flags the directory was opened with.
-	///
-	/// # Returns
-	///
-	/// Returns `Ok(())` if successful, or an error code otherwise.
-	fn releasedir(&self, _req: RequestInfo, _path: &Path, _fh: u64, _flags: u32) -> ResultEmpty {
-		Ok(())
-	}
-
-	/// Retrieves filesystem statistics.
-	///
-	/// This method provides information about the filesystem, such as total size,
-	/// available space, and number of files. Since CernVM-FS is a read-only filesystem,
-	/// some of these values (like free space) are always zero.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `_path` - The path for which to get statistics (usually ignored).
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultStatfs` containing filesystem statistics, or an error code
-	/// if the operation failed.
-	fn statfs(&self, _req: RequestInfo, _path: &Path) -> ResultStatfs {
-		if let Some((ts, cached)) = *self.cached_statfs.lock().map_err(|_| libc::EIO)? {
-			#[allow(clippy::collapsible_if)]
-			if ts.elapsed() < Duration::from_secs(5) {
-				return Ok(cached);
-			}
-		}
-		log::info!("Refreshing FS statistics");
-		let repo = self.repository.read().map_err(|_| libc::EIO)?;
-		let statistics = repo.get_statistics()?;
-		let result = Statfs {
-			blocks: 1 + statistics.file_size as u64 / 512,
-			bfree: 0,
-			bavail: 0,
-			files: statistics.regular as u64,
-			ffree: 0,
-			bsize: 512,
-			namelen: 255,
-			frsize: 512,
+	fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
+		let path = match self.inodes.get_path(ino) {
+			Some(p) => p,
+			None => return reply.error(libc::ENOENT),
+		};
+		let cvmfs_path = if path.is_empty() { "" } else { &path };
+		let repo = match self.repository.read() {
+			Ok(r) => r,
+			Err(_) => return reply.error(libc::EIO),
+		};
+		let entries = match repo.list_directory(cvmfs_path) {
+			Ok(e) => e,
+			Err(_) => return reply.error(libc::ENOTDIR),
 		};
 		drop(repo);
-		if let Ok(mut cache) = self.cached_statfs.lock() {
-			*cache = Some((Instant::now(), result));
+
+		let mut all_entries: Vec<(u64, FileType, String)> = Vec::with_capacity(entries.len() + 2);
+		all_entries.push((ino, FileType::Directory, ".".into()));
+		let parent_ino = if ino == FUSE_ROOT_ID {
+			FUSE_ROOT_ID
+		} else {
+			let parent_path = path.rsplit_once('/').map_or(String::new(), |(p, _)| p.into());
+			self.inodes.get_or_insert(&parent_path)
+		};
+		all_entries.push((parent_ino, FileType::Directory, "..".into()));
+
+		if let Ok(mut cache) = self.lookup_cache.write() {
+			self.evict_if_full(&mut cache, entries.len());
+			for entry in &entries {
+				let child_path = if path.is_empty() {
+					format!("/{}", entry.name)
+				} else {
+					format!("{}/{}", path, entry.name)
+				};
+				let child_ino = self.inodes.get_or_insert(&child_path);
+				all_entries.push((
+					child_ino,
+					map_dirent_type_to_fs_kind(entry),
+					entry.name.clone(),
+				));
+				cache.insert(child_path, Arc::new(entry.clone()));
+			}
+		} else {
+			for entry in &entries {
+				let child_path = if path.is_empty() {
+					format!("/{}", entry.name)
+				} else {
+					format!("{}/{}", path, entry.name)
+				};
+				let child_ino = self.inodes.get_or_insert(&child_path);
+				all_entries.push((
+					child_ino,
+					map_dirent_type_to_fs_kind(entry),
+					entry.name.clone(),
+				));
+			}
 		}
-		Ok(result)
+
+		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
+		if let Ok(mut dirs) = self.opened_dirs.write() {
+			dirs.insert(fh, all_entries);
+		}
+		reply.opened(fh, 0);
 	}
 
-	/// Retrieves an extended attribute for a file or directory.
-	///
-	/// This method is called when an extended attribute is requested. Since CernVM-FS
-	/// doesn't currently support extended attributes, this always returns ENODATA.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `_path` - The path to the file or directory.
-	/// * `_name` - The name of the extended attribute.
-	/// * `_size` - The size of the buffer for the attribute value.
-	///
-	/// # Returns
-	///
-	/// Returns a `ResultXattr` containing the attribute value, or an error code
-	/// if the operation failed.
-	fn getxattr(&self, _req: RequestInfo, _path: &Path, name: &OsStr, size: u32) -> ResultXattr {
-		let name = name.to_str().ok_or(libc::ENODATA)?;
-		let repo = self.repository.read().map_err(|_| libc::EIO)?;
+	fn readdir(
+		&mut self,
+		_req: &Request<'_>,
+		_ino: u64,
+		fh: u64,
+		offset: i64,
+		mut reply: ReplyDirectory,
+	) {
+		let dirs = match self.opened_dirs.read() {
+			Ok(d) => d,
+			Err(_) => return reply.error(libc::EIO),
+		};
+		let all_entries = match dirs.get(&fh) {
+			Some(e) => e,
+			None => return reply.error(libc::EBADF),
+		};
+		for (i, (ino, kind, name)) in all_entries.iter().enumerate().skip(offset as usize) {
+			if reply.add(*ino, (i + 1) as i64, *kind, name) {
+				break;
+			}
+		}
+		reply.ok();
+	}
+
+	fn releasedir(
+		&mut self,
+		_req: &Request<'_>,
+		_ino: u64,
+		fh: u64,
+		_flags: i32,
+		reply: ReplyEmpty,
+	) {
+		if let Ok(mut dirs) = self.opened_dirs.write() {
+			dirs.remove(&fh);
+		}
+		reply.ok();
+	}
+
+	fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
+		if let Ok(guard) = self.cached_statfs.lock()
+			&& let Some((ts, cached)) = *guard
+			&& ts.elapsed() < Duration::from_secs(5)
+		{
+			return reply.statfs(cached.blocks, 0, 0, cached.files, 0, 512, 255, 0);
+		}
+		let (blocks, files) = match self.repository.read() {
+			Ok(repo) => match repo.get_statistics() {
+				Ok(stats) => (1 + stats.file_size as u64 / 512, stats.regular as u64),
+				Err(_) => (0, 0),
+			},
+			Err(_) => return reply.error(libc::EIO),
+		};
+		if let Ok(mut cache) = self.cached_statfs.lock() {
+			*cache = Some((Instant::now(), CachedStatfs { blocks, files }));
+		}
+		reply.statfs(blocks, 0, 0, files, 0, 512, 255, 0);
+	}
+
+	fn getxattr(
+		&mut self,
+		_req: &Request<'_>,
+		_ino: u64,
+		name: &OsStr,
+		size: u32,
+		reply: ReplyXattr,
+	) {
+		let name = match name.to_str() {
+			Some(n) => n,
+			None => return reply.error(libc::ENODATA),
+		};
+		let repo = match self.repository.read() {
+			Ok(r) => r,
+			Err(_) => return reply.error(libc::EIO),
+		};
 		let value = match name {
 			"user.fqrn" => repo.fqrn.clone(),
 			"user.revision" => repo.manifest.revision.to_string(),
@@ -525,73 +411,166 @@ impl FilesystemMT for CernvmFileSystem {
 			"user.host" => repo.fetcher_source(),
 			"user.expires" => repo.manifest.last_modified.to_rfc3339(),
 			"user.nclg" => repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string(),
-			_ => return Err(libc::ENODATA),
+			_ => return reply.error(libc::ENODATA),
 		};
 		let bytes = value.into_bytes();
 		if size == 0 {
-			return Ok(fuse_mt::Xattr::Size(bytes.len() as u32));
+			reply.size(bytes.len() as u32);
+		} else {
+			reply.data(&bytes);
 		}
-		Ok(fuse_mt::Xattr::Data(bytes))
 	}
 
-	/// Checks access permissions for a file or directory.
-	///
-	/// This method checks whether the calling process has the specified access rights
-	/// to the file or directory. In CernVM-FS, this mainly just checks if the path exists.
-	///
-	/// # Arguments
-	///
-	/// * `_req` - Information about the request.
-	/// * `path` - The path to the file or directory.
-	/// * `_mask` - The access rights to check.
-	///
-	/// # Returns
-	///
-	/// Returns `Ok(())` if access is allowed, or an error code otherwise.
-	fn access(&self, _req: RequestInfo, path: &Path, _mask: u32) -> ResultEmpty {
-		let path = path.to_str().ok_or(libc::ENOENT)?;
-		log::info!("Accessing: {path}");
-		self.cached_lookup(path).map(|_| ())?;
-		Ok(())
+	fn access(&mut self, _req: &Request<'_>, ino: u64, _mask: i32, reply: ReplyEmpty) {
+		let path = match self.inodes.get_path(ino) {
+			Some(p) => p,
+			None => return reply.error(libc::ENOENT),
+		};
+		let cvmfs_path = if path.is_empty() { "" } else { &path };
+		match self.cached_lookup(cvmfs_path) {
+			Ok(_) => reply.ok(),
+			Err(_) => reply.error(libc::ENOENT),
+		}
 	}
 }
 
+const LOOKUP_CACHE_CAP: usize = 65_536;
+
 impl CernvmFileSystem {
 	fn cached_lookup(&self, path: &str) -> CvmfsResult<Arc<DirectoryEntry>> {
-		if let Some(entry) = self.lookup_cache.read().ok().and_then(|c| c.get(path).cloned()) {
+		let lookup_path = if path.is_empty() { "/" } else { path };
+		if let Some(entry) = self.lookup_cache.read().ok().and_then(|c| c.get(lookup_path).cloned())
+		{
 			return Ok(entry);
 		}
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{:?}", e)))?;
-		let entry = Arc::new(repo.lookup(path)?);
+		let cvmfs_path = if path == "/" { "" } else { path };
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
+		let entry = Arc::new(repo.lookup(cvmfs_path)?);
 		drop(repo);
 		if let Ok(mut cache) = self.lookup_cache.write() {
-			cache.insert(path.into(), Arc::clone(&entry));
+			self.evict_if_full(&mut cache, 1);
+			cache.insert(lookup_path.into(), Arc::clone(&entry));
 		}
 		Ok(entry)
 	}
 
-	/// Creates a new CernvmFileSystem instance.
-	///
-	/// This constructor creates a new filesystem instance that operates on the given
-	/// repository. It initializes the filesystem with an empty state and prepares it for
-	/// mounting.
-	///
-	/// # Arguments
-	///
-	/// * `repository` - The CernVM-FS repository to expose through the filesystem.
-	///
-	/// # Returns
-	///
-	/// Returns a `CvmfsResult<Self>` containing the new filesystem instance, or an error
-	/// if initialization failed.
+	fn evict_if_full(&self, cache: &mut HashMap<String, Arc<DirectoryEntry>>, incoming: usize) {
+		if cache.len() + incoming > LOOKUP_CACHE_CAP {
+			cache.clear();
+		}
+	}
+
+	/// Creates a new `CernvmFileSystem` instance.
 	pub fn new(repository: Repository) -> CvmfsResult<Self> {
 		Ok(Self {
 			repository: RwLock::new(repository),
+			inodes: InodeTable::new(),
 			opened_files: Default::default(),
-			cached_statfs: Mutex::new(None),
+			opened_dirs: Default::default(),
 			lookup_cache: Default::default(),
-			readdir_cache: Default::default(),
+			cached_statfs: Mutex::new(None),
 		})
+	}
+
+	/// Mount the filesystem at the given path.
+	pub fn mount(self, mountpoint: &str) -> std::io::Result<()> {
+		let options =
+			vec![MountOption::RO, MountOption::FSName("cernvmfs".into()), MountOption::NoAtime];
+		fuser::mount2(self, mountpoint, &options)
+	}
+
+	/// Look up a path and return its attributes. Used by tests.
+	pub fn do_lookup(&self, path: &str) -> CvmfsResult<(u64, FileAttr)> {
+		let entry = self.cached_lookup(path)?;
+		let lookup_path = if path.is_empty() || path == "/" { "/" } else { path };
+		let ino = self.inodes.get_or_insert(lookup_path);
+		let attr = make_file_attr(ino, &entry).ok_or(CvmfsError::InvalidTimestamp)?;
+		Ok((ino, attr))
+	}
+
+	/// Read symlink target for a path.
+	pub fn do_readlink(&self, path: &str) -> CvmfsResult<String> {
+		let entry = self.cached_lookup(path)?;
+		if !entry.is_symlink() {
+			return Err(CvmfsError::NotASymlink);
+		}
+		entry.symlink.clone().ok_or(CvmfsError::FileNotFound)
+	}
+
+	/// Open a file, returning a file handle.
+	pub fn do_open(&self, path: &str) -> CvmfsResult<u64> {
+		let entry = self.cached_lookup(path)?;
+		if !entry.is_file() {
+			return Err(CvmfsError::NotAFile);
+		}
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
+		let file = repo.retrieve_object(&entry, path)?;
+		drop(repo);
+		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
+		self.opened_files.write().map_err(|_| CvmfsError::Sync)?.insert(fh, file);
+		Ok(fh)
+	}
+
+	/// Release (close) a file handle.
+	pub fn do_release(&self, fh: u64) -> CvmfsResult<()> {
+		self.opened_files
+			.write()
+			.map_err(|_| CvmfsError::Sync)?
+			.remove(&fh)
+			.ok_or(CvmfsError::FileNotFound)?;
+		Ok(())
+	}
+
+	/// Read data from an open file.
+	pub fn do_read(&self, fh: u64, offset: u64, size: u32) -> CvmfsResult<Vec<u8>> {
+		let files = self.opened_files.read().map_err(|_| CvmfsError::Sync)?;
+		let file = files.get(&fh).ok_or(CvmfsError::FileNotFound)?;
+		let mut buf = vec![0u8; size as usize];
+		let n = file.read_at(offset, &mut buf).map_err(|_| CvmfsError::FileNotFound)?;
+		buf.truncate(n);
+		Ok(buf)
+	}
+
+	/// List directory entries for a path.
+	pub fn do_readdir(&self, path: &str) -> CvmfsResult<Vec<(FileType, String)>> {
+		let cvmfs_path = if path == "/" { "" } else { path };
+		let entry = self.cached_lookup(cvmfs_path)?;
+		if !entry.is_directory() {
+			return Err(CvmfsError::FileNotFound);
+		}
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
+		let entries = repo.list_directory(cvmfs_path)?;
+		drop(repo);
+		Ok(entries.into_iter().map(|e| (map_dirent_type_to_fs_kind(&e), e.name)).collect())
+	}
+
+	/// Get filesystem statistics.
+	pub fn do_statfs(&self) -> CvmfsResult<(u64, u64)> {
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
+		let stats = repo.get_statistics()?;
+		Ok((1 + stats.file_size as u64 / 512, stats.regular as u64))
+	}
+
+	/// Get extended attribute value.
+	pub fn do_getxattr(&self, name: &str) -> CvmfsResult<String> {
+		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
+		match name {
+			"user.fqrn" => Ok(repo.fqrn.clone()),
+			"user.revision" => Ok(repo.manifest.revision.to_string()),
+			"user.hash" => Ok(repo.manifest.root_catalog.clone()),
+			"user.host" => Ok(repo.fetcher_source()),
+			"user.expires" => Ok(repo.manifest.last_modified.to_rfc3339()),
+			"user.nclg" => {
+				Ok(repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string())
+			}
+			_ => Err(CvmfsError::FileNotFound),
+		}
+	}
+
+	/// Check if path exists (access check).
+	pub fn do_access(&self, path: &str) -> CvmfsResult<()> {
+		let cvmfs_path = if path == "/" { "" } else { path };
+		self.cached_lookup(cvmfs_path).map(|_| ())
 	}
 }
 
