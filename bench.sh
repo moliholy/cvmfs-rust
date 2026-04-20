@@ -75,8 +75,8 @@ ls "$RUST_MOUNT/" >/dev/null 2>&1
 ls "$CPP_MOUNT/" >/dev/null 2>&1
 cat "$RUST_MOUNT/testfile" >/dev/null 2>&1
 cat "$CPP_MOUNT/testfile" >/dev/null 2>&1
-find "$RUST_MOUNT" -maxdepth 3 >/dev/null 2>&1
-find "$CPP_MOUNT" -maxdepth 3 >/dev/null 2>&1
+find "$RUST_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
+find "$CPP_MOUNT" -maxdepth 3 >/dev/null 2>&1 || true
 
 # ── Helpers ──
 
