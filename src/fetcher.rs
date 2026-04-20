@@ -52,12 +52,16 @@ const MAX_RETRIES: u32 = 3;
 /// * Caching downloaded files to avoid redundant network requests
 /// * Automatic decompression of repository content
 /// * Fallback to remote sources when files aren't in the cache
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
 #[derive(Debug)]
 pub struct Fetcher {
 	pub cache: Cache,
 	pub source: String,
 	pub mirrors: Vec<String>,
 	pub proxy: Option<String>,
+	pub offline: AtomicBool,
+	pub io_errors: AtomicU64,
 }
 
 impl Fetcher {
@@ -72,7 +76,14 @@ impl Fetcher {
 		if initialize {
 			cache.initialize()?;
 		}
-		Ok(Self { cache, source, mirrors: Vec::new(), proxy: None })
+		Ok(Self {
+			cache,
+			source,
+			mirrors: Vec::new(),
+			proxy: None,
+			offline: AtomicBool::new(false),
+			io_errors: AtomicU64::new(0),
+		})
 	}
 
 	pub fn with_mirrors(
@@ -144,7 +155,32 @@ impl Fetcher {
 		if let Some(cached_file) = self.cache.get(file_name) {
 			return Ok(cached_file.to_str().ok_or(CvmfsError::FileNotFound)?.into());
 		}
-		self.retrieve_file_from_source(file_name)
+		if self.offline.load(Ordering::Relaxed) {
+			return Err(CvmfsError::FileNotFound);
+		}
+		match self.retrieve_file_from_source(file_name) {
+			Ok(path) => {
+				self.offline.store(false, Ordering::Relaxed);
+				Ok(path)
+			}
+			Err(e) => {
+				self.io_errors.fetch_add(1, Ordering::Relaxed);
+				if let Some(cached_file) = self.cache.get(file_name) {
+					log::warn!("network failed, serving {file_name} from stale cache");
+					self.offline.store(true, Ordering::Relaxed);
+					return Ok(cached_file.to_str().ok_or(CvmfsError::FileNotFound)?.into());
+				}
+				Err(e)
+			}
+		}
+	}
+
+	pub fn is_offline(&self) -> bool {
+		self.offline.load(Ordering::Relaxed)
+	}
+
+	pub fn io_error_count(&self) -> u64 {
+		self.io_errors.load(Ordering::Relaxed)
 	}
 
 	fn retrieve_file_from_source(&self, file_name: &str) -> CvmfsResult<String> {
