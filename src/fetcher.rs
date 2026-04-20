@@ -23,12 +23,7 @@
 //! includes the repository name and a `.cvmfs` suffix. For example:
 //! `http://cvmfs-stratum-one.cern.ch/cvmfs/atlas.cern.ch`
 
-use std::{
-	fs,
-	io::Read,
-	path::{Path, PathBuf},
-	time::Duration,
-};
+use std::{fs, io::Read, path::Path, time::Duration};
 
 use compress::zlib;
 use reqwest::blocking::Client;
@@ -56,6 +51,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 pub struct Fetcher {
 	pub cache: Cache,
 	pub source: String,
+	pub mirrors: Vec<String>,
 }
 
 impl Fetcher {
@@ -70,7 +66,28 @@ impl Fetcher {
 		if initialize {
 			cache.initialize()?;
 		}
-		Ok(Self { cache, source })
+		Ok(Self { cache, source, mirrors: Vec::new() })
+	}
+
+	pub fn with_mirrors(
+		sources: &[&str],
+		cache_directory: &str,
+		initialize: bool,
+	) -> CvmfsResult<Self> {
+		if sources.is_empty() {
+			return Err(CvmfsError::Generic("at least one source is required".into()));
+		}
+		let mut fetcher = Self::new(sources[0], cache_directory, initialize)?;
+		for &mirror in &sources[1..] {
+			let path = Path::new(mirror);
+			let url = if path.exists() && path.is_dir() {
+				format!("file://{mirror}")
+			} else {
+				mirror.into()
+			};
+			fetcher.mirrors.push(url);
+		}
+		Ok(fetcher)
 	}
 
 	/// Method to retrieve a file from the cache if exists, or from
@@ -78,18 +95,27 @@ impl Fetcher {
 	/// the repository it won't be decompressed.
 	pub fn retrieve_raw_file(&self, file_name: &str) -> CvmfsResult<String> {
 		let cache_file = self.cache.add(file_name)?;
-		let file_url = self.make_file_url(file_name);
-		Self::download_content_and_store(
-			cache_file.to_str().ok_or(CvmfsError::FileNotFound)?,
-			file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
-		)?;
-		Ok(self
-			.cache
-			.get(file_name)
-			.ok_or(CvmfsError::FileNotFound)?
-			.to_str()
-			.ok_or(CvmfsError::FileNotFound)?
-			.into())
+		let cache_str = cache_file.to_str().ok_or(CvmfsError::FileNotFound)?;
+		let mut last_err = None;
+		for source in self.all_sources() {
+			let file_url = Path::join(source.as_ref(), file_name);
+			match Self::download_content_and_store(
+				cache_str,
+				file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
+			) {
+				Ok(()) => {
+					return Ok(self
+						.cache
+						.get(file_name)
+						.ok_or(CvmfsError::FileNotFound)?
+						.to_str()
+						.ok_or(CvmfsError::FileNotFound)?
+						.into());
+				}
+				Err(e) => last_err = Some(e),
+			}
+		}
+		Err(last_err.unwrap_or(CvmfsError::FileNotFound))
 	}
 
 	pub fn retrieve_file(&self, file_name: &str) -> CvmfsResult<String> {
@@ -99,21 +125,30 @@ impl Fetcher {
 		self.retrieve_file_from_source(file_name)
 	}
 
-	fn make_file_url(&self, file_name: &str) -> PathBuf {
-		Path::join(self.source.as_ref(), file_name)
+	fn retrieve_file_from_source(&self, file_name: &str) -> CvmfsResult<String> {
+		let cached_file = self.cache.add(file_name)?;
+		let cache_str = cached_file.to_str().ok_or(CvmfsError::FileNotFound)?;
+		let mut last_err = None;
+		for source in self.all_sources() {
+			let file_url = Path::join(source.as_ref(), file_name);
+			match Self::download_content_and_decompress(
+				cache_str,
+				file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
+			) {
+				Ok(()) => {
+					return match self.cache.get(file_name) {
+						None => Err(CvmfsError::FileNotFound),
+						Some(file) => Ok(file.to_str().ok_or(CvmfsError::FileNotFound)?.into()),
+					};
+				}
+				Err(e) => last_err = Some(e),
+			}
+		}
+		Err(last_err.unwrap_or(CvmfsError::FileNotFound))
 	}
 
-	fn retrieve_file_from_source(&self, file_name: &str) -> CvmfsResult<String> {
-		let file_url = self.make_file_url(file_name);
-		let cached_file = self.cache.add(file_name)?;
-		Self::download_content_and_decompress(
-			cached_file.to_str().ok_or(CvmfsError::FileNotFound)?,
-			file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
-		)?;
-		match self.cache.get(file_name) {
-			None => Err(CvmfsError::FileNotFound),
-			Some(file) => Ok(file.to_str().ok_or(CvmfsError::FileNotFound)?.into()),
-		}
+	fn all_sources(&self) -> impl Iterator<Item = &str> {
+		std::iter::once(self.source.as_str()).chain(self.mirrors.iter().map(String::as_str))
 	}
 
 	fn validated_get(file_url: &str) -> CvmfsResult<Vec<u8>> {
