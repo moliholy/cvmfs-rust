@@ -8,6 +8,7 @@ pub mod fetcher;
 pub mod file_system;
 pub mod history;
 pub mod manifest;
+pub mod reflog;
 pub mod repository;
 pub mod revision_tag;
 pub mod root_file;

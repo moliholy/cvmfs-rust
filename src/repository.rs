@@ -7,12 +7,13 @@ use crate::{
 	certificate::{CERTIFICATE_ROOT_PREFIX, Certificate},
 	common::{
 		ChunkedFile, CvmfsError, CvmfsResult, FileLike, LAST_REPLICATION_NAME, MANIFEST_NAME,
-		REPLICATING_NAME, WHITELIST_NAME, compose_object_path,
+		REFLOG_NAME, REPLICATING_NAME, WHITELIST_NAME, compose_object_path,
 	},
 	directory_entry::{Chunk, DirectoryEntry},
 	fetcher::Fetcher,
 	history::History,
 	manifest::Manifest,
+	reflog::Reflog,
 	revision_tag::RevisionTag,
 	root_file::RootFile,
 	whitelist::Whitelist,
@@ -286,5 +287,10 @@ impl Repository {
 
 	pub fn get_statistics(&mut self) -> CvmfsResult<Statistics> {
 		self.retrieve_current_root_catalog()?.get_statistics()
+	}
+
+	pub fn retrieve_reflog(&self) -> CvmfsResult<Reflog> {
+		let reflog_file = self.fetcher.retrieve_raw_file(REFLOG_NAME)?;
+		Reflog::new(&reflog_file)
 	}
 }

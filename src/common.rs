@@ -34,6 +34,8 @@ pub const MANIFEST_NAME: &str = ".cvmfspublished";
 pub const LAST_REPLICATION_NAME: &str = ".cvmfs_last_snapshot";
 /// Name of the file indicating ongoing replication.
 pub const REPLICATING_NAME: &str = ".cvmfs_is_snapshotting";
+/// Name of the reflog database file.
+pub const REFLOG_NAME: &str = ".cvmfsreflog";
 
 pub type CvmfsResult<R> = Result<R, CvmfsError>;
 pub trait FileLike: Debug + Read + Seek + AsRawFd + Send + Sync {}
