@@ -2,6 +2,7 @@
 
 [![Rust](https://img.shields.io/badge/rust-stable-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
+[![codecov](https://codecov.io/gh/moliholy/cvmfs-rust/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-rust)
 
 A [CernVM-FS](https://github.com/cvmfs/cvmfs) client implementation written in Rust. This project provides a
 modern, memory-safe alternative to the original C++ implementation, allowing users to mount
