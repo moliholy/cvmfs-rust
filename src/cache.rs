@@ -179,7 +179,8 @@ impl Cache {
 		if !path.is_file() {
 			return None;
 		}
-		if self.is_expired(&path) {
+		let is_data_object = file_name.starts_with("data/");
+		if !is_data_object && self.is_expired(&path) {
 			std::fs::remove_file(&path).ok();
 			return None;
 		}
@@ -441,7 +442,7 @@ mod tests {
 	}
 
 	#[test]
-	fn cache_ttl_expired_file_not_returned() {
+	fn cache_ttl_expired_metadata_not_returned() {
 		let dir = tmp_cache_dir("ttl_exp");
 		fs::create_dir_all(&dir).unwrap();
 		let cache = Cache::new(dir.to_str().unwrap().into())
@@ -449,12 +450,31 @@ mod tests {
 			.with_ttl(Duration::from_millis(1), Duration::from_secs(5));
 		cache.initialize().unwrap();
 
-		let file_path = dir.join("data/ab/expired");
-		fs::write(&file_path, b"old data").unwrap();
+		let file_path = dir.join(".cvmfspublished");
+		fs::write(&file_path, b"old metadata").unwrap();
 		std::thread::sleep(Duration::from_millis(5));
 
-		assert!(cache.get("data/ab/expired").is_none());
+		assert!(cache.get(".cvmfspublished").is_none());
 		assert!(!file_path.exists());
+
+		fs::remove_dir_all(&dir).ok();
+	}
+
+	#[test]
+	fn cache_data_objects_never_expire() {
+		let dir = tmp_cache_dir("data_no_exp");
+		fs::create_dir_all(&dir).unwrap();
+		let cache = Cache::new(dir.to_str().unwrap().into())
+			.unwrap()
+			.with_ttl(Duration::from_millis(1), Duration::from_secs(5));
+		cache.initialize().unwrap();
+
+		let file_path = dir.join("data/ab/deadbeef1234");
+		fs::write(&file_path, b"content-addressed data").unwrap();
+		std::thread::sleep(Duration::from_millis(5));
+
+		assert!(cache.get("data/ab/deadbeef1234").is_some());
+		assert!(file_path.exists());
 
 		fs::remove_dir_all(&dir).ok();
 	}
