@@ -54,7 +54,13 @@ fn map_dirent_type_to_fs_kind(dirent: &DirectoryEntry) -> FileType {
 	} else if dirent.is_symlink() {
 		FileType::Symlink
 	} else {
-		FileType::RegularFile
+		match dirent.mode & libc::S_IFMT {
+			libc::S_IFSOCK => FileType::Socket,
+			libc::S_IFIFO => FileType::NamedPipe,
+			libc::S_IFBLK => FileType::BlockDevice,
+			libc::S_IFCHR => FileType::CharDevice,
+			_ => FileType::RegularFile,
+		}
 	}
 }
 
