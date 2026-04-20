@@ -26,10 +26,16 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+use reqwest::blocking::Client;
 
 use crate::cache::Cache;
 use crate::common::{CvmfsError, CvmfsResult};
 use compress::zlib;
+
+const MAX_DOWNLOAD_SIZE: u64 = 1024 * 1024 * 1024;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Manages retrieval of repository content from both cache and remote sources
 ///
@@ -106,16 +112,35 @@ impl Fetcher {
         }
     }
 
+    fn validated_get(file_url: &str) -> CvmfsResult<Vec<u8>> {
+        let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+        let response = client.get(file_url).send()?;
+        if !response.status().is_success() {
+            return Err(CvmfsError::IO(format!(
+                "HTTP {} for {}",
+                response.status(),
+                file_url
+            )));
+        }
+        if let Some(len) = response.content_length() {
+            if len > MAX_DOWNLOAD_SIZE {
+                return Err(CvmfsError::IO(format!(
+                    "response too large: {} bytes",
+                    len
+                )));
+            }
+        }
+        Ok(response.bytes()?.to_vec())
+    }
+
     fn download_content_and_decompress(cached_file: &str, file_url: &str) -> CvmfsResult<()> {
-        let response = reqwest::blocking::get(file_url)?;
-        let file_bytes = response.bytes()?;
-        Self::decompress(file_bytes.as_ref(), cached_file)?;
+        let file_bytes = Self::validated_get(file_url)?;
+        Self::decompress(&file_bytes, cached_file)?;
         Ok(())
     }
 
     fn download_content_and_store(cached_file: &str, file_url: &str) -> CvmfsResult<()> {
-        let response = reqwest::blocking::get(file_url)?;
-        let content = response.bytes()?.to_vec();
+        let content = Self::validated_get(file_url)?;
         fs::write(cached_file, content)?;
         Ok(())
     }
