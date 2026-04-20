@@ -122,8 +122,12 @@ impl Cache {
     /// # Returns
     ///
     /// Returns a `PathBuf` with the full path where the file would be stored.
-    pub fn add(&self, file_name: &str) -> PathBuf {
-        Path::join(self.cache_directory.as_ref(), file_name)
+    pub fn add(&self, file_name: &str) -> CvmfsResult<PathBuf> {
+        if file_name.contains("..") || file_name.starts_with('/') {
+            return Err(CvmfsError::IO("invalid cache filename".to_string()));
+        }
+        let path = Path::join(self.cache_directory.as_ref(), file_name);
+        Ok(path)
     }
 
     /// Retrieves the path to a file if it exists in the cache
@@ -140,8 +144,8 @@ impl Cache {
     /// Returns an `Option<PathBuf>` containing the path to the file if it exists,
     /// or `None` if the file is not in the cache.
     pub fn get(&self, file_name: &str) -> Option<PathBuf> {
-        let path = self.add(file_name);
-        if path.exists() || path.is_file() {
+        let path = self.add(file_name).ok()?;
+        if path.is_file() {
             return Some(path);
         }
         None

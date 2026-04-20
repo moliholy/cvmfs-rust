@@ -67,7 +67,7 @@ impl Fetcher {
     /// the repository if it doesn't. In case it has to be retrieved from
     /// the repository it won't be decompressed.
     pub fn retrieve_raw_file(&self, file_name: &str) -> CvmfsResult<String> {
-        let cache_file = self.cache.add(file_name);
+        let cache_file = self.cache.add(file_name)?;
         let file_url = self.make_file_url(file_name);
         Self::download_content_and_store(
             cache_file.to_str().ok_or(CvmfsError::FileNotFound)?,
@@ -95,7 +95,7 @@ impl Fetcher {
 
     fn retrieve_file_from_source(&self, file_name: &str) -> CvmfsResult<String> {
         let file_url = self.make_file_url(file_name);
-        let cached_file = self.cache.add(file_name);
+        let cached_file = self.cache.add(file_name)?;
         Self::download_content_and_decompress(
             cached_file.to_str().ok_or(CvmfsError::FileNotFound)?,
             file_url.to_str().ok_or(CvmfsError::FileNotFound)?,
