@@ -31,6 +31,7 @@ use crate::common::{CvmfsError, CvmfsResult};
 
 const DEFAULT_TTL: Duration = Duration::from_secs(60);
 const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(5);
+const DEFAULT_QUOTA: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
 
 /// A cache for storing repository objects locally
 ///
@@ -43,6 +44,7 @@ pub struct Cache {
 	ttl: Duration,
 	negative_ttl: Duration,
 	negative_entries: Mutex<HashMap<String, Instant>>,
+	quota: u64,
 }
 
 impl Cache {
@@ -70,12 +72,18 @@ impl Cache {
 			ttl: DEFAULT_TTL,
 			negative_ttl: DEFAULT_NEGATIVE_TTL,
 			negative_entries: Mutex::new(HashMap::new()),
+			quota: DEFAULT_QUOTA,
 		})
 	}
 
 	pub fn with_ttl(mut self, ttl: Duration, negative_ttl: Duration) -> Self {
 		self.ttl = ttl;
 		self.negative_ttl = negative_ttl;
+		self
+	}
+
+	pub fn with_quota(mut self, quota_bytes: u64) -> Self {
+		self.quota = quota_bytes;
 		self
 	}
 
@@ -229,6 +237,67 @@ impl Cache {
 			entries.clear();
 		}
 		Ok(())
+	}
+
+	pub fn cache_size(&self) -> u64 {
+		let data_path = Path::new(&self.cache_directory).join("data");
+		Self::dir_size(&data_path)
+	}
+
+	pub fn enforce_quota(&self) -> CvmfsResult<()> {
+		let current = self.cache_size();
+		if current <= self.quota {
+			return Ok(());
+		}
+		let data_path = Path::new(&self.cache_directory).join("data");
+		let mut files = Self::collect_files_by_atime(&data_path);
+		files.sort_by_key(|(_, atime)| *atime);
+		let mut freed = 0u64;
+		let target = current - self.quota;
+		for (path, _) in &files {
+			if freed >= target {
+				break;
+			}
+			if let Ok(meta) = path.metadata() {
+				freed += meta.len();
+				std::fs::remove_file(path).ok();
+			}
+		}
+		Ok(())
+	}
+
+	fn dir_size(path: &Path) -> u64 {
+		let mut total = 0;
+		if let Ok(entries) = std::fs::read_dir(path) {
+			for entry in entries.flatten() {
+				let p = entry.path();
+				if p.is_dir() {
+					total += Self::dir_size(&p);
+				} else if let Ok(meta) = p.metadata() {
+					total += meta.len();
+				}
+			}
+		}
+		total
+	}
+
+	fn collect_files_by_atime(path: &Path) -> Vec<(PathBuf, std::time::SystemTime)> {
+		let mut files = Vec::new();
+		if let Ok(entries) = std::fs::read_dir(path) {
+			for entry in entries.flatten() {
+				let p = entry.path();
+				if p.is_dir() {
+					files.extend(Self::collect_files_by_atime(&p));
+				} else if let Ok(meta) = p.metadata() {
+					let atime = meta
+						.accessed()
+						.or_else(|_| meta.modified())
+						.unwrap_or(std::time::UNIX_EPOCH);
+					files.push((p, atime));
+				}
+			}
+		}
+		files
 	}
 }
 

@@ -18,6 +18,7 @@ path = "src/lib.rs"
 name = "cvmfs-cli"
 path = "src/main.rs"
 
+
 [dependencies]
 # Cryptography and hashing
 sha1 = "0.10"
