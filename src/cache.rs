@@ -29,7 +29,7 @@ use std::{
 
 use crate::common::{CvmfsError, CvmfsResult};
 
-const DEFAULT_TTL: Duration = Duration::from_secs(60);
+const DEFAULT_TTL: Duration = Duration::from_secs(3600);
 const DEFAULT_NEGATIVE_TTL: Duration = Duration::from_secs(5);
 const DEFAULT_QUOTA: u64 = 4 * 1024 * 1024 * 1024; // 4 GB
 

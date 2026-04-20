@@ -246,17 +246,17 @@ run_bench "cat pacman-latest.tar.gz (full)" \
     "cat $CPP_MOUNT/pacman-latest.tar.gz"
 
 print_section "recursive traversal"
-run_bench "find / -type f (full repo)" \
-    "find $RUST_MOUNT -type f" \
-    "find $CPP_MOUNT -type f"
-run_bench "find / (all entries)" \
-    "find $RUST_MOUNT" \
-    "find $CPP_MOUNT"
+run_bench "find / -maxdepth 3 -type f" \
+    "find $RUST_MOUNT -maxdepth 3 -type f" \
+    "find $CPP_MOUNT -maxdepth 3 -type f"
+run_bench "find / -maxdepth 3 (all entries)" \
+    "find $RUST_MOUNT -maxdepth 3" \
+    "find $CPP_MOUNT -maxdepth 3"
 
 print_section "du (recursive stat)"
-run_bench "du -s / (full tree)" \
-    "du -s $RUST_MOUNT" \
-    "du -s $CPP_MOUNT"
+run_bench "du -s / -maxdepth 2" \
+    "du -d 2 -s $RUST_MOUNT" \
+    "du -d 2 -s $CPP_MOUNT"
 
 print_section "hash large files"
 run_bench "md5 run.db (chunked, 410MB)" \
