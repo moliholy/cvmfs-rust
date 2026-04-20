@@ -3,6 +3,7 @@ name: Build release binaries
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -10,6 +11,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
@@ -17,7 +19,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13
           - target: aarch64-apple-darwin
             os: macos-latest
 
@@ -40,17 +42,20 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y libfuse3-dev
 
-    - name: Install cross-compilation tools (aarch64-linux)
+    - name: Install cross (aarch64-linux)
       if: matrix.target == 'aarch64-unknown-linux-gnu'
-      run: |
-        sudo apt-get install -y gcc-aarch64-linux-gnu
-        echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+      run: cargo install cross --git https://github.com/cross-rs/cross
 
     - name: Install macFUSE (macOS)
       if: runner.os == 'macOS'
       run: brew install macfuse
 
-    - name: Build
+    - name: Build (cross)
+      if: matrix.target == 'aarch64-unknown-linux-gnu'
+      run: cross build --release --target ${{ matrix.target }}
+
+    - name: Build (native)
+      if: matrix.target != 'aarch64-unknown-linux-gnu'
       run: cargo build --release --target ${{ matrix.target }}
 
     - name: Package
@@ -61,6 +66,7 @@ jobs:
         cd ../../..
 
     - name: Upload to release
+      if: github.event_name == 'release'
       env:
         GH_TOKEN: ${{ github.token }}
       run: gh release upload ${{ github.event.release.tag_name }} cvmfs-cli-${{ matrix.target }}.tar.gz

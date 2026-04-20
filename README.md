@@ -147,54 +147,57 @@ let servers = discover_servers("boss.cern.ch") ?;
 ## Benchmarks
 
 Both implementations mounted via FUSE, benchmarked with [hyperfine](https://github.com/sharkdp/hyperfine) (100 runs, 10
-warmup). Rust cvmfs-cli v0.2.0, C++ cvmfs2 v2.11.5. Repository: `boss.cern.ch`.
+warmup). Rust cvmfs-cli v0.3.0, C++ cvmfs2 v2.11.5. Repository: `boss.cern.ch`.
 
-**Result: Rust wins 15/23 benchmarks.**
+**Result: Rust wins 7/23 benchmarks. Near-parity on most operations.**
 
 ### Metadata operations
 
-| Operation        | Rust  | C++   | Winner    |
-|------------------|-------|-------|-----------|
-| stat / (root)    | 4.2ms | 4.3ms | Rust +4%  |
-| stat /testfile   | 4.9ms | 4.9ms | Rust +1%  |
-| stat /database   | 4.5ms | 4.6ms | Rust +2%  |
-| stat symlink     | 5.2ms | 3.8ms | C++ +35%  |
-| readlink symlink | 1.0ms | 1.3ms | Rust +21% |
+| Operation        | Rust   | C++    | Winner    |
+|------------------|--------|--------|-----------|
+| stat / (root)    | 3.7ms  | 4.1ms  | Rust +11% |
+| stat /testfile   | 3.8ms  | 3.8ms  | Tie       |
+| stat /database   | 4.0ms  | 4.0ms  | Tie       |
+| stat symlink     | 3.7ms  | 3.7ms  | Tie       |
+| readlink symlink | 806µs  | 817µs  | Rust +1%  |
 
 ### Directory listing
 
-| Operation                    | Rust  | C++   | Winner    |
-|------------------------------|-------|-------|-----------|
-| ls / (root)                  | 2.3ms | 1.7ms | C++ +35%  |
-| ls /database                 | 1.6ms | 1.8ms | Rust +17% |
-| ls /pacman-3.29              | 1.6ms | 2.1ms | Rust +28% |
-| ls /slc4_ia32_gcc34 (nested) | 1.3ms | 0.7ms | C++ +89%  |
+| Operation                     | Rust  | C++   | Winner    |
+|-------------------------------|-------|-------|-----------|
+| ls / (root)                   | 1.6ms | 1.4ms | C++ +13%  |
+| ls /database                  | 1.6ms | 1.3ms | C++ +19%  |
+| ls /pacman-3.29               | 1.4ms | 1.3ms | C++ +4%   |
+| ls /slc4_ia32_gcc34 (nested)  | 1.4ms | 1.4ms | Rust +3%  |
 
 ### File reads
 
-| Operation                         | Rust  | C++   | Winner     |
-|-----------------------------------|-------|-------|------------|
-| cat /testfile (50B)               | 1.2ms | 1.2ms | Rust +2%   |
-| head -c 16 offlinedb.db (chunked) | 1.2ms | 2.3ms | Rust +100% |
-| head -c 2 pacman-latest.tar.gz    | 1.2ms | 0.4ms | C++ +166%  |
-| dd seek+read offlinedb.db         | 2.7ms | 2.9ms | Rust +10%  |
-| cat pacman-latest.tar.gz (full)   | 1.8ms | 2.3ms | Rust +23%  |
+| Operation                          | Rust  | C++   | Winner    |
+|------------------------------------|-------|-------|-----------|
+| cat /testfile (50B)                | 1.1ms | 1.1ms | Tie       |
+| head -c 16 offlinedb.db (chunked) | 1.7ms | 1.2ms | C++ +39%  |
+| head -c 2 pacman-latest.tar.gz    | 1.2ms | 1.5ms | Rust +25% |
+| dd seek+read offlinedb.db         | 2.0ms | 1.9ms | C++ +9%   |
+| cat pacman-latest.tar.gz (full)   | 1.7ms | 1.8ms | Rust +9%  |
+| wc -c /testfile                   | 1.4ms | 1.6ms | Rust +15% |
 
 ### Recursive traversal
 
-| Operation                     | Rust   | C++    | Winner    |
-|-------------------------------|--------|--------|-----------|
-| find /pacman-3.29 -maxdepth 1 | 1.6ms  | 3.1ms  | Rust +94% |
-| find /database -type f        | 1.3ms  | 1.3ms  | Rust +1%  |
-| find / -maxdepth 3            | 16.4ms | 10.3ms | C++ +59%  |
-| du -d 2                       | 1.8ms  | 1.8ms  | C++ +3%   |
+| Operation                     | Rust    | C++    | Winner    |
+|-------------------------------|---------|--------|-----------|
+| find /pacman-3.29 -maxdepth 1 | 1.7ms   | 1.6ms  | C++ +6%   |
+| find /database -type f        | 1.8ms   | 1.6ms  | C++ +15%  |
+| find / -maxdepth 3            | 19.1ms  | 10.3ms | C++ +87%  |
+| du -d 2                       | 2.0ms   | 1.7ms  | C++ +16%  |
 
 ### Large file I/O (10 runs, 2 warmup)
 
-| Operation                   | Rust   | C++    | Winner   |
-|-----------------------------|--------|--------|----------|
-| md5 run.db (chunked, 410MB) | 643ms  | 694ms  | Rust +8% |
-| cat run.db (chunked, 410MB) | 39.7ms | 41.2ms | Rust +4% |
+| Operation                    | Rust   | C++    | Winner   |
+|------------------------------|--------|--------|----------|
+| md5 run.db (chunked, 410MB)  | 645ms  | 664ms  | Rust +3% |
+| cat run.db (chunked, 410MB)  | 39.1ms | 38.1ms | C++ +2%  |
+| md5 /testfile                | 1.3ms  | 1.3ms  | Tie      |
+| md5 pacman-latest.tar.gz     | 2.3ms  | 2.2ms  | C++ +7%  |
 
 ```bash
 make bench    # run benchmarks (requires sudo, cvmfs2, hyperfine)
@@ -213,6 +216,10 @@ make bench          # benchmark Rust vs C++ cvmfs2 (requires sudo)
 ## License
 
 BSD 3-Clause. See [LICENSE](LICENSE).
+
+## Related Projects
+
+- [cvmfs-java](https://github.com/moliholy/cvmfs-java): Java port of the CernVM-FS client
 
 ## Acknowledgments
 
