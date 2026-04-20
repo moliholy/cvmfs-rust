@@ -61,15 +61,16 @@ impl Manifest {
 					'X' => certificate = value.into(),
 					'H' => history_database = Some(value.into()),
 					'T' => {
-						last_modified = DateTime::from_timestamp_millis(
+						last_modified = DateTime::from_timestamp(
 							value.parse().map_err(|_| CvmfsError::InvalidTimestamp)?,
+							0,
 						)
 						.ok_or(CvmfsError::InvalidTimestamp)?
 					}
 					'D' => ttl = value.parse().map_err(|_| CvmfsError::ParseError)?,
 					'S' => revision = value.parse().map_err(|_| CvmfsError::ParseError)?,
 					'N' => repository_name = value.into(),
-					'L' => micro_catalog = value.into(),
+					'L' | 'Y' => micro_catalog = value.into(),
 					'G' => garbage_collectable = Self::parse_boolean(value)?,
 					'A' => allows_alternative_name = Self::parse_boolean(value)?,
 					_ => {}
@@ -175,8 +176,26 @@ mod tests {
 		assert_eq!(manifest.revision, 42);
 		assert_eq!(manifest.repository_name, "test.repo");
 		assert_eq!(manifest.micro_catalog, "my_micro_catalog");
+		assert_eq!(manifest.last_modified.timestamp(), 1000);
 		assert!(manifest.garbage_collectable);
 		assert!(manifest.allows_alternative_name);
+	}
+
+	#[test]
+	fn parse_manifest_timestamp_is_seconds() {
+		let content = "Ccat\nRhash\nB0\nXcert\nT1713952007\nD0\nS1\nNrepo\nGno\nAno\n";
+		let rf = make_root_file(content);
+		let manifest = Manifest::new(rf).unwrap();
+		assert_eq!(manifest.last_modified.timestamp(), 1713952007);
+		assert_eq!(manifest.last_modified.format("%Y").to_string(), "2024");
+	}
+
+	#[test]
+	fn parse_manifest_y_field_micro_catalog() {
+		let content = "Ccat\nRhash\nB0\nXcert\nT0\nD0\nS1\nNrepo\nYmicro_hash\nGno\nAno\n";
+		let rf = make_root_file(content);
+		let manifest = Manifest::new(rf).unwrap();
+		assert_eq!(manifest.micro_catalog, "micro_hash");
 	}
 
 	#[test]
