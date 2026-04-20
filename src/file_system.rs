@@ -242,7 +242,7 @@ impl FilesystemMT for CernvmFileSystem {
 			Err(e) => {
 				log::error!("{:?}", e);
 				return callback(Err(libc::EIO));
-			},
+			}
 		};
 		let file = match opened_files.get_mut(path) {
 			Some(f) => f,
@@ -265,7 +265,7 @@ impl FilesystemMT for CernvmFileSystem {
 					Some(code) => code,
 					None => libc::EIO,
 				}));
-			},
+			}
 		};
 
 		callback(Ok(&data[0..bytes_read]))
@@ -359,7 +359,7 @@ impl FilesystemMT for CernvmFileSystem {
 			Err(e) => {
 				log::error!("{:?}", e);
 				return Err(libc::EIO);
-			},
+			}
 		};
 		let result = repo.lookup(path)?;
 		if !result.is_directory() {
@@ -404,7 +404,7 @@ impl FilesystemMT for CernvmFileSystem {
 			Err(e) => {
 				log::error!("Could not list directory {path}: {:?}", e);
 				Err(e.into())
-			},
+			}
 		}
 	}
 

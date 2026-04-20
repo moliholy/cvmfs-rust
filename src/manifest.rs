@@ -60,18 +60,19 @@ impl Manifest {
 					'B' => root_catalog_size = value.parse().map_err(|_| CvmfsError::ParseError)?,
 					'X' => certificate = value.into(),
 					'H' => history_database = Some(value.into()),
-					'T' =>
+					'T' => {
 						last_modified = DateTime::from_timestamp_millis(
 							value.parse().map_err(|_| CvmfsError::InvalidTimestamp)?,
 						)
-						.ok_or(CvmfsError::InvalidTimestamp)?,
+						.ok_or(CvmfsError::InvalidTimestamp)?
+					}
 					'D' => ttl = value.parse().map_err(|_| CvmfsError::ParseError)?,
 					'S' => revision = value.parse().map_err(|_| CvmfsError::ParseError)?,
 					'N' => repository_name = value.into(),
 					'L' => micro_catalog = value.into(),
 					'G' => garbage_collectable = Self::parse_boolean(value)?,
 					'A' => allows_alternative_name = Self::parse_boolean(value)?,
-					_ => {},
+					_ => {}
 				}
 			}
 		}

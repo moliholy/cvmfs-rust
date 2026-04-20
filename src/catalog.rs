@@ -190,20 +190,22 @@ impl Catalog {
 			match key.as_str() {
 				"revision" => revision = value.parse().map_err(|_| CvmfsError::ParseError)?,
 				"schema" => schema = value.parse().map_err(|_| CvmfsError::ParseError)?,
-				"schema_revision" =>
-					schema_revision = value.parse().map_err(|_| CvmfsError::ParseError)?,
-				"last_modified" =>
+				"schema_revision" => {
+					schema_revision = value.parse().map_err(|_| CvmfsError::ParseError)?
+				}
+				"last_modified" => {
 					last_modified = DateTime::from_timestamp(
 						value.parse().map_err(|_| CvmfsError::ParseError)?,
 						0,
 					)
-					.ok_or(CvmfsError::InvalidTimestamp)?,
+					.ok_or(CvmfsError::InvalidTimestamp)?
+				}
 				"previous_revision" => previous_revision.push_str(&value),
 				"root_prefix" => {
 					root_prefix.clear();
 					root_prefix.push_str(&value)
-				},
-				_ => {},
+				}
+				_ => {}
 			}
 		}
 		if revision == 0 || schema == 0.0 {
@@ -321,9 +323,9 @@ impl Catalog {
 	///
 	/// Returns `true` if the path is properly sanitized, `false` otherwise.
 	pub(crate) fn path_sanitized(needle_path: &str, catalog_path: &str) -> bool {
-		needle_path.len() == catalog_path.len() ||
-			(needle_path.len() > catalog_path.len() &&
-				needle_path.as_bytes()[catalog_path.len()] == b'/')
+		needle_path.len() == catalog_path.len()
+			|| (needle_path.len() > catalog_path.len()
+				&& needle_path.as_bytes()[catalog_path.len()] == b'/')
 	}
 
 	/// Finds the best matching nested catalog for a given path.
@@ -350,9 +352,9 @@ impl Catalog {
 		let mut best_match_score = 0;
 		let real_needle_path = canonicalize_path(needle_path);
 		for nested_catalog in catalog_refs {
-			if real_needle_path.starts_with(&nested_catalog.root_path) &&
-				nested_catalog.root_path.len() > best_match_score &&
-				Self::path_sanitized(needle_path, &nested_catalog.root_path)
+			if real_needle_path.starts_with(&nested_catalog.root_path)
+				&& nested_catalog.root_path.len() > best_match_score
+				&& Self::path_sanitized(needle_path, &nested_catalog.root_path)
 			{
 				best_match_score = nested_catalog.root_path.len();
 				best_match = Some(nested_catalog);
@@ -390,12 +392,13 @@ impl Catalog {
 		let mut rows = statement.query([parent_1, parent_2])?;
 		loop {
 			match rows.next() {
-				Ok(row) =>
+				Ok(row) => {
 					if let Some(row) = row {
 						result.push(self.make_directory_entry(row)?);
 					} else {
 						break;
-					},
+					}
+				}
 				Err(e) => return Err(e.into()),
 			}
 		}
@@ -463,7 +466,7 @@ impl Catalog {
 				"subtree_special" => statistics.special = row.get(1)?,
 				"subtree_symlink" => statistics.symlink = row.get(1)?,
 				"subtree_xattr" => statistics.xattr = row.get(1)?,
-				_ => {},
+				_ => {}
 			}
 		}
 		Ok(statistics)

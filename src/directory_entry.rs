@@ -299,7 +299,7 @@ impl DirectoryEntry {
 		self.chunks.clear();
 		loop {
 			match rows.next() {
-				Ok(row) =>
+				Ok(row) => {
 					if let Some(row) = row {
 						let content_hash: Vec<u8> = row.get(4)?;
 						self.chunks.push(Chunk {
@@ -310,7 +310,8 @@ impl DirectoryEntry {
 						})
 					} else {
 						break;
-					},
+					}
+				}
 				Err(e) => return Err(e.into()),
 			}
 		}

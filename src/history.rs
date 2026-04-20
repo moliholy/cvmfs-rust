@@ -116,7 +116,7 @@ impl History {
 			match key.as_str() {
 				"schema" => schema.push_str(&value),
 				"fqrn" => fqrn.push_str(&value),
-				_ => {},
+				_ => {}
 			}
 		}
 		if schema.ne("1.0") {
