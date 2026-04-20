@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::RwLock;
 use std::time::{Duration, SystemTime};
 
@@ -11,7 +12,8 @@ use fuse_mt::{
     ResultEntry, ResultOpen, ResultReaddir, ResultSlice, ResultXattr,
 };
 use fuse_mt::{DirectoryEntry as FuseDirectoryEntry, ResultStatfs, Statfs};
-use rand::Rng;
+
+static NEXT_DIR_FD: AtomicU64 = AtomicU64::new(0x1000);
 
 use crate::common::{CvmfsError, CvmfsResult, FileLike};
 use crate::directory_entry::DirectoryEntry;
@@ -360,9 +362,7 @@ impl FilesystemMT for CernvmFileSystem {
         if !result.is_directory() {
             return Err(libc::ENOENT);
         }
-        // don't need file descriptors if we have the path
-        let mut rng = rand::rng();
-        let fd = rng.random();
+        let fd = NEXT_DIR_FD.fetch_add(1, Ordering::Relaxed);
         Ok((fd, 0))
     }
 
