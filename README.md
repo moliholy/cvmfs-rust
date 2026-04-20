@@ -134,26 +134,26 @@ Repository: `boss.cern.ch`.
 
 ### Light operations (50 iterations)
 
-| Operation | Rust | C++ cvmfs2 | Winner |
-|---|---|---|---|
-| stat / (root) | 6.70ms | 6.62ms | C++ +1% |
-| stat /testfile | 6.99ms | 6.64ms | C++ +5% |
-| stat /database | 6.66ms | 6.64ms | C++ +0% |
-| stat symlink | 6.66ms | 6.70ms | Rust +1% |
-| ls / (root) | 5.00ms | 4.45ms | C++ +12% |
-| ls /database | 5.48ms | 4.47ms | C++ +23% |
-| ls /pacman-3.29 | 5.21ms | 4.48ms | C++ +16% |
-| ls /slc4_ia32_gcc34 (nested) | 5.02ms | 4.48ms | C++ +12% |
-| readlink symlink | 4.33ms | 4.20ms | C++ +3% |
-| cat /testfile (50B) | 4.40ms | 4.18ms | C++ +5% |
-| head -c 16 offlinedb.db (chunked) | 5.32ms | 4.34ms | C++ +23% |
-| head -c 2 pacman-latest.tar.gz | 4.46ms | 4.45ms | C++ +0% |
-| dd seek+read offlinedb.db | 5.40ms | 4.39ms | C++ +23% |
-| find /pacman-3.29 | 5.50ms | 4.56ms | C++ +21% |
-| find /database -type f | 6.06ms | 4.58ms | C++ +32% |
-| wc -c /testfile | 4.46ms | 4.25ms | C++ +5% |
-| wc -c /pacman-latest.tar.gz | 4.47ms | 4.20ms | C++ +6% |
-| md5 /testfile | 4.55ms | 4.34ms | C++ +5% |
+| Operation                         | Rust   | C++ cvmfs2 | Winner   |
+|-----------------------------------|--------|------------|----------|
+| stat / (root)                     | 6.70ms | 6.62ms     | C++ +1%  |
+| stat /testfile                    | 6.99ms | 6.64ms     | C++ +5%  |
+| stat /database                    | 6.66ms | 6.64ms     | C++ +0%  |
+| stat symlink                      | 6.66ms | 6.70ms     | Rust +1% |
+| ls / (root)                       | 5.00ms | 4.45ms     | C++ +12% |
+| ls /database                      | 5.48ms | 4.47ms     | C++ +23% |
+| ls /pacman-3.29                   | 5.21ms | 4.48ms     | C++ +16% |
+| ls /slc4_ia32_gcc34 (nested)      | 5.02ms | 4.48ms     | C++ +12% |
+| readlink symlink                  | 4.33ms | 4.20ms     | C++ +3%  |
+| cat /testfile (50B)               | 4.40ms | 4.18ms     | C++ +5%  |
+| head -c 16 offlinedb.db (chunked) | 5.32ms | 4.34ms     | C++ +23% |
+| head -c 2 pacman-latest.tar.gz    | 4.46ms | 4.45ms     | C++ +0%  |
+| dd seek+read offlinedb.db         | 5.40ms | 4.39ms     | C++ +23% |
+| find /pacman-3.29                 | 5.50ms | 4.56ms     | C++ +21% |
+| find /database -type f            | 6.06ms | 4.58ms     | C++ +32% |
+| wc -c /testfile                   | 4.46ms | 4.25ms     | C++ +5%  |
+| wc -c /pacman-latest.tar.gz       | 4.47ms | 4.20ms     | C++ +6%  |
+| md5 /testfile                     | 4.55ms | 4.34ms     | C++ +5%  |
 
 Timings dominated by shell subprocess overhead (~4ms), not FUSE performance.
 
