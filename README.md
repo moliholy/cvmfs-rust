@@ -43,6 +43,7 @@ cargo binstall cvmfs
 ```
 
 Pre-built binaries available for:
+
 - `x86_64-unknown-linux-gnu`
 - `aarch64-unknown-linux-gnu`
 - `x86_64-apple-darwin`
@@ -146,58 +147,59 @@ let servers = discover_servers("boss.cern.ch") ?;
 
 ## Benchmarks
 
-Both implementations mounted via FUSE on Linux (Docker), benchmarked with [hyperfine](https://github.com/sharkdp/hyperfine)
+Both implementations mounted via FUSE on Linux (Docker), benchmarked
+with [hyperfine](https://github.com/sharkdp/hyperfine)
 (100 runs, 10 warmup). C++ cvmfs2 v2.13.3. Repository: `boss.cern.ch`. Multi-threaded fuser with `readdirplus`.
 
 **Rust dominates bulk I/O. Metadata operations at parity (sub-ms, within measurement noise).**
 
 ### Metadata operations
 
-| Operation        | Rust   | C++    | Ratio       |
-|------------------|--------|--------|-------------|
-| stat / (root)    | 0.4ms  | 0.4ms  | ~1.0x       |
-| stat /testfile   | 0.3ms  | 0.3ms  | ~1.0x       |
-| stat /database   | 0.3ms  | 0.3ms  | ~1.0x       |
-| stat symlink     | 0.4ms  | 0.4ms  | ~1.0x       |
-| readlink symlink | 0.2ms  | 0.2ms  | ~1.0x       |
+| Operation        | Rust  | C++   | Ratio |
+|------------------|-------|-------|-------|
+| stat / (root)    | 0.4ms | 0.4ms | ~1.0x |
+| stat /testfile   | 0.3ms | 0.3ms | ~1.0x |
+| stat /database   | 0.3ms | 0.3ms | ~1.0x |
+| stat symlink     | 0.4ms | 0.4ms | ~1.0x |
+| readlink symlink | 0.2ms | 0.2ms | ~1.0x |
 
 ### Directory listing
 
-| Operation                     | Rust  | C++   | Ratio     |
-|-------------------------------|-------|-------|-----------|
-| ls / (root)                   | 0.4ms | 0.4ms | ~1.0x     |
-| ls /database                  | 0.4ms | 0.4ms | ~1.0x     |
-| ls /pacman-3.29               | 0.5ms | 0.4ms | ~1.0x     |
-| ls /slc4_ia32_gcc34 (nested)  | 0.5ms | 0.4ms | ~1.0x     |
+| Operation                    | Rust  | C++   | Ratio |
+|------------------------------|-------|-------|-------|
+| ls / (root)                  | 0.4ms | 0.4ms | ~1.0x |
+| ls /database                 | 0.4ms | 0.4ms | ~1.0x |
+| ls /pacman-3.29              | 0.5ms | 0.4ms | ~1.0x |
+| ls /slc4_ia32_gcc34 (nested) | 0.5ms | 0.4ms | ~1.0x |
 
 ### File reads
 
-| Operation                          | Rust  | C++   | Winner     |
-|------------------------------------|-------|-------|------------|
-| cat /testfile (50B)                | 0.3ms | 0.3ms | ~1.0x      |
-| head -c 16 offlinedb.db (chunked) | 0.4ms | 0.4ms | Rust +1%   |
-| head -c 2 pacman-latest.tar.gz    | 0.3ms | 0.3ms | Rust +2%   |
-| dd seek+read offlinedb.db         | 0.4ms | 0.4ms | Rust +2%   |
-| cat pacman-latest.tar.gz (full)   | 0.3ms | 0.3ms | ~1.0x      |
-| wc -c /testfile                   | 0.3ms | 0.3ms | ~1.0x      |
+| Operation                         | Rust  | C++   | Winner   |
+|-----------------------------------|-------|-------|----------|
+| cat /testfile (50B)               | 0.3ms | 0.3ms | ~1.0x    |
+| head -c 16 offlinedb.db (chunked) | 0.4ms | 0.4ms | Rust +1% |
+| head -c 2 pacman-latest.tar.gz    | 0.3ms | 0.3ms | Rust +2% |
+| dd seek+read offlinedb.db         | 0.4ms | 0.4ms | Rust +2% |
+| cat pacman-latest.tar.gz (full)   | 0.3ms | 0.3ms | ~1.0x    |
+| wc -c /testfile                   | 0.3ms | 0.3ms | ~1.0x    |
 
 ### Recursive traversal
 
-| Operation                     | Rust   | C++    | Ratio     |
-|-------------------------------|--------|--------|-----------|
-| find /pacman-3.29 -maxdepth 1 | 0.5ms  | 0.5ms  | ~1.0x     |
-| find /database -type f        | 0.5ms  | 0.5ms  | Rust +4%  |
-| find / -maxdepth 3            | 5.7ms  | 4.9ms  | C++ +14%  |
-| du -d 2                       | 0.2ms  | 0.2ms  | Rust +5%  |
+| Operation                     | Rust  | C++   | Ratio    |
+|-------------------------------|-------|-------|----------|
+| find /pacman-3.29 -maxdepth 1 | 0.5ms | 0.5ms | ~1.0x    |
+| find /database -type f        | 0.5ms | 0.5ms | ~1.0x    |
+| find / -maxdepth 3            | 5.7ms | 4.9ms | C++ +14% |
+| du -d 2                       | 0.2ms | 0.2ms | Rust +5% |
 
 ### Large file I/O (10 runs, 2 warmup)
 
-| Operation                    | Rust   | C++    | Winner     |
-|------------------------------|--------|--------|------------|
-| md5 run.db (chunked, 410MB)  | 759ms  | 789ms  | Rust +4%   |
-| cat run.db (chunked, 410MB)  | 40ms   | 48ms   | Rust +21%  |
-| md5 /testfile                | 0.3ms  | 0.3ms  | ~1.0x      |
-| md5 pacman-latest.tar.gz     | 1.9ms  | 1.9ms  | ~1.0x      |
+| Operation                   | Rust  | C++   | Winner    |
+|-----------------------------|-------|-------|-----------|
+| md5 run.db (chunked, 410MB) | 759ms | 789ms | Rust +4%  |
+| cat run.db (chunked, 410MB) | 40ms  | 48ms  | Rust +21% |
+| md5 /testfile               | 0.3ms | 0.3ms | ~1.0x     |
+| md5 pacman-latest.tar.gz    | 1.9ms | 1.9ms | ~1.0x     |
 
 ```bash
 make bench          # run locally (requires sudo, cvmfs2, hyperfine)
