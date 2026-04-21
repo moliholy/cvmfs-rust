@@ -2,6 +2,7 @@
 
 [![Rust](https://github.com/moliholy/cvmfs-rust/actions/workflows/rust.yml/badge.svg)](https://github.com/moliholy/cvmfs-rust/actions/workflows/rust.yml)
 [![codecov](https://codecov.io/gh/moliholy/cvmfs-rust/graph/badge.svg)](https://codecov.io/gh/moliholy/cvmfs-rust)
+[![Crates.io](https://img.shields.io/crates/v/cvmfs.svg)](https://crates.io/crates/cvmfs)
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg)](LICENSE)
 
 A pure Rust implementation of the [CernVM-FS](https://cernvm.cern.ch/fs) client. Mount remote CVMFS repositories as
@@ -18,7 +19,7 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 
 ## Features
 
-- FUSE filesystem mounting via `fuser`
+- Multi-threaded FUSE filesystem via `fuser` with `readdirplus` (Linux)
 - Transparent decompression (zlib, LZ4, Zstd) of content-addressed objects
 - RSA-PKCS1v15 signature verification of repository manifests
 - Whitelist validation (repository name matching + expiry checks)
@@ -216,6 +217,10 @@ make coverage       # generate coverage report
 make bench          # benchmark Rust vs C++ cvmfs2 (requires sudo)
 make bench-docker   # benchmark in Docker (recommended)
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 

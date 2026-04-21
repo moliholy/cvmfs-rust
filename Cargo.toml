@@ -1,6 +1,6 @@
 [package]
 name = "cvmfs"
-version = "0.3.0"
+version = "0.4.0"
 description = "CernVM-FS client implementation in Rust"
 authors = ["José Molina <jmolinacolmenero@gmail.com>"]
 edition = "2024"
