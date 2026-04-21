@@ -177,9 +177,9 @@ with [hyperfine](https://github.com/sharkdp/hyperfine)
 | Operation                         | Rust  | C++   | Winner   |
 |-----------------------------------|-------|-------|----------|
 | cat /testfile (50B)               | 0.3ms | 0.3ms | ~1.0x    |
-| head -c 16 offlinedb.db (chunked) | 0.4ms | 0.4ms | Rust +1% |
-| head -c 2 pacman-latest.tar.gz    | 0.3ms | 0.3ms | Rust +2% |
-| dd seek+read offlinedb.db         | 0.4ms | 0.4ms | Rust +2% |
+| head -c 16 offlinedb.db (chunked) | 0.4ms | 0.4ms | ~1.0x    |
+| head -c 2 pacman-latest.tar.gz    | 0.3ms | 0.3ms | ~1.0x    |
+| dd seek+read offlinedb.db         | 0.4ms | 0.4ms | ~1.0x    |
 | cat pacman-latest.tar.gz (full)   | 0.3ms | 0.3ms | ~1.0x    |
 | wc -c /testfile                   | 0.3ms | 0.3ms | ~1.0x    |
 
@@ -190,7 +190,7 @@ with [hyperfine](https://github.com/sharkdp/hyperfine)
 | find /pacman-3.29 -maxdepth 1 | 0.5ms | 0.5ms | ~1.0x    |
 | find /database -type f        | 0.5ms | 0.5ms | ~1.0x    |
 | find / -maxdepth 3            | 5.7ms | 4.9ms | C++ +14% |
-| du -d 2                       | 0.2ms | 0.2ms | Rust +5% |
+| du -d 2                       | 0.2ms | 0.2ms | ~1.0x    |
 
 ### Large file I/O (10 runs, 2 warmup)
 
