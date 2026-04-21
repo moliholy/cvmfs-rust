@@ -27,7 +27,7 @@ hex = "0.4"
 x509-certificate = "0.25"
 
 # Database and storage
-rusqlite = { version = "0.39", features = ["blob"] }
+rusqlite = { version = "0.39", features = ["blob", "bundled"] }
 
 # Filesystem integration
 fuser = "0.17"
