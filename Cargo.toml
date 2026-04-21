@@ -47,6 +47,7 @@ env_logger = "0.11"
 rsa = { version = "0.9", features = ["sha1"] }
 lz4_flex = "0.13"
 zstd = "0.13"
+parking_lot = "0.12"
 
 [dev-dependencies]
 serial_test = "3.4"

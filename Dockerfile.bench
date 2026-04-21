@@ -1,0 +1,36 @@
+FROM rust:1.95-bookworm AS builder
+
+RUN apt-get update && apt-get install -y libfuse3-dev pkg-config
+WORKDIR /src
+COPY . .
+RUN cargo build --release
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    fuse3 \
+    wget \
+    hyperfine \
+    curl \
+    python3 \
+    findutils \
+    coreutils \
+    lsb-release \
+    gnupg2 \
+    && wget https://ecsft.cern.ch/dist/cvmfs/cvmfs-release/cvmfs-release-latest_all.deb \
+    && dpkg -i cvmfs-release-latest_all.deb \
+    && rm cvmfs-release-latest_all.deb \
+    && apt-get update \
+    && apt-get install -y cvmfs \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN cvmfs_config setup && \
+    echo 'CVMFS_HTTP_PROXY="DIRECT"' > /etc/cvmfs/default.local && \
+    echo 'CVMFS_CLIENT_PROFILE="single"' >> /etc/cvmfs/default.local
+
+COPY --from=builder /src/target/release/cvmfs-cli /usr/local/bin/cvmfs-cli
+COPY bench.sh /bench.sh
+RUN chmod +x /bench.sh
+
+ENV CVMFS_RUST_BIN=/usr/local/bin/cvmfs-cli
+CMD ["/bench.sh"]

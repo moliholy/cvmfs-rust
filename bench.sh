@@ -8,13 +8,19 @@ CPP_CACHE="/tmp/bench_cpp_cache"
 REPO_URL="http://cvmfs-stratum-one.cern.ch/opt/boss"
 REPO_FQRN="boss.cern.ch"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RUST_BIN="$SCRIPT_DIR/target/release/cvmfs-cli"
+RUST_BIN="${CVMFS_RUST_BIN:-$SCRIPT_DIR/target/release/cvmfs-cli}"
 RUNS=100
 WARMUP=10
 
+if command -v md5sum &>/dev/null; then
+    MD5CMD="md5sum"
+else
+    MD5CMD="md5 -q"
+fi
+
 cleanup() {
-    umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
-    umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
+    fusermount -u "$RUST_MOUNT" 2>/dev/null || umount "$RUST_MOUNT" 2>/dev/null || diskutil unmount force "$RUST_MOUNT" 2>/dev/null || true
+    fusermount -u "$CPP_MOUNT" 2>/dev/null || umount "$CPP_MOUNT" 2>/dev/null || diskutil unmount force "$CPP_MOUNT" 2>/dev/null || true
     kill "${RUST_PID:-}" 2>/dev/null || true
     kill "${CPP_PID:-}" 2>/dev/null || true
     sleep 1
@@ -199,11 +205,11 @@ run_bench "cat pacman-latest.tar.gz" \
 
 # ── hash ──
 run_bench "md5 /testfile" \
-    "md5 -q $RUST_MOUNT/testfile" \
-    "md5 -q $CPP_MOUNT/testfile"
+    "$MD5CMD $RUST_MOUNT/testfile" \
+    "$MD5CMD $CPP_MOUNT/testfile"
 run_bench "md5 pacman-latest.tar.gz" \
-    "md5 -q $RUST_MOUNT/pacman-latest.tar.gz" \
-    "md5 -q $CPP_MOUNT/pacman-latest.tar.gz"
+    "$MD5CMD $RUST_MOUNT/pacman-latest.tar.gz" \
+    "$MD5CMD $CPP_MOUNT/pacman-latest.tar.gz"
 
 # ── du ──
 run_bench "du -d 2" \
@@ -212,8 +218,8 @@ run_bench "du -d 2" \
 
 # ── heavy (fewer runs, long operations) ──
 run_bench "md5 run.db (chunked, 410MB)" \
-    "md5 -q $RUST_MOUNT/database/run.db" \
-    "md5 -q $CPP_MOUNT/database/run.db" \
+    "$MD5CMD $RUST_MOUNT/database/run.db" \
+    "$MD5CMD $CPP_MOUNT/database/run.db" \
     10 2
 run_bench "cat run.db (chunked, 410MB)" \
     "cat $RUST_MOUNT/database/run.db > /dev/null" \

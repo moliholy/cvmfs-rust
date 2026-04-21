@@ -3,11 +3,13 @@ use std::{
 	collections::HashMap,
 	ffi::OsStr,
 	sync::{
-		Arc, Mutex, RwLock,
+		Arc,
 		atomic::{AtomicU64, Ordering},
 	},
 	time::{Duration, Instant, SystemTime},
 };
+
+use parking_lot::{Mutex, RwLock};
 
 use chrono::{DateTime, Utc};
 use fuser::{
@@ -28,6 +30,11 @@ thread_local! {
 
 const TTL: Duration = Duration::from_secs(3600);
 const FUSE_ROOT_ID: u64 = 1;
+
+#[cfg(target_os = "linux")]
+fn num_cpus() -> usize {
+	std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4)
+}
 
 type DirListing = Vec<(u64, FileType, String, FileAttr)>;
 
@@ -95,22 +102,21 @@ impl InodeTable {
 	}
 
 	fn get_or_insert(&self, path: &str) -> u64 {
-		if let Some(ino) = self.path_to_ino.read().ok().and_then(|m| m.get(path).copied()) {
+		if let Some(&ino) = self.path_to_ino.read().get(path) {
 			return ino;
 		}
 		let ino = self.next_ino.fetch_add(1, Ordering::Relaxed);
-		if let (Ok(mut p2i), Ok(mut i2p)) = (self.path_to_ino.write(), self.ino_to_path.write()) {
-			if let Some(&existing) = p2i.get(path) {
-				return existing;
-			}
-			p2i.insert(path.into(), ino);
-			i2p.insert(ino, path.into());
+		let mut p2i = self.path_to_ino.write();
+		if let Some(&existing) = p2i.get(path) {
+			return existing;
 		}
+		p2i.insert(path.into(), ino);
+		self.ino_to_path.write().insert(ino, path.into());
 		ino
 	}
 
 	fn get_path(&self, ino: u64) -> Option<String> {
-		self.ino_to_path.read().ok()?.get(&ino).cloned()
+		self.ino_to_path.read().get(&ino).cloned()
 	}
 }
 
@@ -123,7 +129,7 @@ struct CachedStatfs {
 /// FUSE filesystem implementation for CernVM-FS.
 #[derive(Debug)]
 pub struct CernvmFileSystem {
-	repository: RwLock<Repository>,
+	repository: Repository,
 	inodes: InodeTable,
 	opened_files: RwLock<HashMap<u64, Box<dyn FileLike>>>,
 	opened_dirs: RwLock<HashMap<u64, DirListing>>,
@@ -196,26 +202,19 @@ impl Filesystem for CernvmFileSystem {
 			Some(p) => p,
 			None => return reply.error(Errno::ENOENT),
 		};
-		let entry = match self.cached_lookup(&path) {
+		let entry = match self.cached_lookup_with_chunks(&path) {
 			Ok(e) => e,
 			Err(_) => return reply.error(Errno::ENOENT),
 		};
 		if !entry.is_file() {
 			return reply.error(Errno::EISDIR);
 		}
-		let repo = match self.repository.read() {
-			Ok(r) => r,
-			Err(_) => return reply.error(Errno::EIO),
-		};
-		let file = match repo.retrieve_object(&entry, &path) {
+		let file = match self.repository.retrieve_object(&entry, &path) {
 			Ok(f) => f,
 			Err(_) => return reply.error(Errno::EIO),
 		};
-		drop(repo);
 		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
-		if let Ok(mut files) = self.opened_files.write() {
-			files.insert(fh, file);
-		}
+		self.opened_files.write().insert(fh, file);
 		reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
 	}
 
@@ -230,10 +229,7 @@ impl Filesystem for CernvmFileSystem {
 		_lock_owner: Option<fuser::LockOwner>,
 		reply: ReplyData,
 	) {
-		let opened_files = match self.opened_files.read() {
-			Ok(guard) => guard,
-			Err(_) => return reply.error(Errno::EIO),
-		};
+		let opened_files = self.opened_files.read();
 		let file = match opened_files.get(&fh.0) {
 			Some(f) => f,
 			None => return reply.error(Errno::EBADF),
@@ -258,9 +254,7 @@ impl Filesystem for CernvmFileSystem {
 		_flush: bool,
 		reply: ReplyEmpty,
 	) {
-		if let Ok(mut files) = self.opened_files.write() {
-			files.remove(&fh.0);
-		}
+		self.opened_files.write().remove(&fh.0);
 		reply.ok();
 	}
 
@@ -270,15 +264,10 @@ impl Filesystem for CernvmFileSystem {
 			None => return reply.error(Errno::ENOENT),
 		};
 		let cvmfs_path = if path.is_empty() { "" } else { &path };
-		let repo = match self.repository.read() {
-			Ok(r) => r,
-			Err(_) => return reply.error(Errno::EIO),
-		};
-		let entries = match repo.list_directory(cvmfs_path) {
+		let entries = match self.repository.list_directory(cvmfs_path) {
 			Ok(e) => e,
 			Err(_) => return reply.error(Errno::ENOTDIR),
 		};
-		drop(repo);
 
 		let mut all_entries: DirListing = Vec::with_capacity(entries.len() + 2);
 		let dot_attr = FileAttr {
@@ -308,7 +297,8 @@ impl Filesystem for CernvmFileSystem {
 		let dotdot_attr = FileAttr { ino: INodeNo(parent_ino), ..dot_attr };
 		all_entries.push((parent_ino, FileType::Directory, "..".into(), dotdot_attr));
 
-		if let Ok(mut cache) = self.lookup_cache.write() {
+		{
+			let mut cache = self.lookup_cache.write();
 			self.evict_if_full(&mut cache, entries.len());
 			for entry in &entries {
 				let child_path = if path.is_empty() {
@@ -326,28 +316,10 @@ impl Filesystem for CernvmFileSystem {
 				));
 				cache.insert(child_path, Arc::new(entry.clone()));
 			}
-		} else {
-			for entry in &entries {
-				let child_path = if path.is_empty() {
-					format!("/{}", entry.name)
-				} else {
-					format!("{}/{}", path, entry.name)
-				};
-				let child_ino = self.inodes.get_or_insert(&child_path);
-				let attr = make_file_attr(child_ino, entry).unwrap_or(dot_attr);
-				all_entries.push((
-					child_ino,
-					map_dirent_type_to_fs_kind(entry),
-					entry.name.clone(),
-					attr,
-				));
-			}
 		}
 
 		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
-		if let Ok(mut dirs) = self.opened_dirs.write() {
-			dirs.insert(fh, all_entries);
-		}
+		self.opened_dirs.write().insert(fh, all_entries);
 		reply.opened(FileHandle(fh), FopenFlags::empty());
 	}
 
@@ -359,10 +331,7 @@ impl Filesystem for CernvmFileSystem {
 		offset: u64,
 		mut reply: ReplyDirectory,
 	) {
-		let dirs = match self.opened_dirs.read() {
-			Ok(d) => d,
-			Err(_) => return reply.error(Errno::EIO),
-		};
+		let dirs = self.opened_dirs.read();
 		let all_entries = match dirs.get(&fh.0) {
 			Some(e) => e,
 			None => return reply.error(Errno::EBADF),
@@ -383,10 +352,7 @@ impl Filesystem for CernvmFileSystem {
 		offset: u64,
 		mut reply: ReplyDirectoryPlus,
 	) {
-		let dirs = match self.opened_dirs.read() {
-			Ok(d) => d,
-			Err(_) => return reply.error(Errno::EIO),
-		};
+		let dirs = self.opened_dirs.read();
 		let all_entries = match dirs.get(&fh.0) {
 			Some(e) => e,
 			None => return reply.error(Errno::EBADF),
@@ -407,29 +373,21 @@ impl Filesystem for CernvmFileSystem {
 		_flags: OpenFlags,
 		reply: ReplyEmpty,
 	) {
-		if let Ok(mut dirs) = self.opened_dirs.write() {
-			dirs.remove(&fh.0);
-		}
+		self.opened_dirs.write().remove(&fh.0);
 		reply.ok();
 	}
 
 	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
-		if let Ok(guard) = self.cached_statfs.lock()
-			&& let Some((ts, cached)) = *guard
+		if let Some((ts, cached)) = *self.cached_statfs.lock()
 			&& ts.elapsed() < Duration::from_secs(5)
 		{
 			return reply.statfs(cached.blocks, 0, 0, cached.files, 0, 512, 255, 0);
 		}
-		let (blocks, files) = match self.repository.read() {
-			Ok(repo) => match repo.get_statistics() {
-				Ok(stats) => (1 + stats.file_size as u64 / 512, stats.regular as u64),
-				Err(_) => (0, 0),
-			},
-			Err(_) => return reply.error(Errno::EIO),
+		let (blocks, files) = match self.repository.get_statistics() {
+			Ok(stats) => (1 + stats.file_size as u64 / 512, stats.regular as u64),
+			Err(_) => (0, 0),
 		};
-		if let Ok(mut cache) = self.cached_statfs.lock() {
-			*cache = Some((Instant::now(), CachedStatfs { blocks, files }));
-		}
+		*self.cached_statfs.lock() = Some((Instant::now(), CachedStatfs { blocks, files }));
 		reply.statfs(blocks, 0, 0, files, 0, 512, 255, 0);
 	}
 
@@ -438,17 +396,13 @@ impl Filesystem for CernvmFileSystem {
 			Some(n) => n,
 			None => return reply.error(Errno::ENOENT),
 		};
-		let repo = match self.repository.read() {
-			Ok(r) => r,
-			Err(_) => return reply.error(Errno::EIO),
-		};
 		let value = match name {
-			"user.fqrn" => repo.fqrn.clone(),
-			"user.revision" => repo.manifest.revision.to_string(),
-			"user.hash" => repo.manifest.root_catalog.clone(),
-			"user.host" => repo.fetcher_source(),
-			"user.expires" => repo.manifest.last_modified.to_rfc3339(),
-			"user.nclg" => repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string(),
+			"user.fqrn" => self.repository.fqrn.clone(),
+			"user.revision" => self.repository.manifest.revision.to_string(),
+			"user.hash" => self.repository.manifest.root_catalog.clone(),
+			"user.host" => self.repository.fetcher_source(),
+			"user.expires" => self.repository.manifest.last_modified.to_rfc3339(),
+			"user.nclg" => self.repository.opened_catalogs.read().len().to_string(),
 			_ => return reply.error(Errno::ENOENT),
 		};
 		let bytes = value.into_bytes();
@@ -477,18 +431,29 @@ const LOOKUP_CACHE_CAP: usize = 65_536;
 impl CernvmFileSystem {
 	fn cached_lookup(&self, path: &str) -> CvmfsResult<Arc<DirectoryEntry>> {
 		let lookup_path = if path.is_empty() { "/" } else { path };
-		if let Some(entry) = self.lookup_cache.read().ok().and_then(|c| c.get(lookup_path).cloned())
+		if let Some(entry) = self.lookup_cache.read().get(lookup_path).cloned() {
+			return Ok(entry);
+		}
+		let cvmfs_path = if path == "/" { "" } else { path };
+		let entry = Arc::new(self.repository.lookup(cvmfs_path)?);
+		let mut cache = self.lookup_cache.write();
+		self.evict_if_full(&mut cache, 1);
+		cache.insert(lookup_path.into(), Arc::clone(&entry));
+		Ok(entry)
+	}
+
+	fn cached_lookup_with_chunks(&self, path: &str) -> CvmfsResult<Arc<DirectoryEntry>> {
+		let lookup_path = if path.is_empty() { "/" } else { path };
+		if let Some(entry) = self.lookup_cache.read().get(lookup_path).cloned()
+			&& (!entry.chunks.is_empty() || !entry.is_file())
 		{
 			return Ok(entry);
 		}
 		let cvmfs_path = if path == "/" { "" } else { path };
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
-		let entry = Arc::new(repo.lookup(cvmfs_path)?);
-		drop(repo);
-		if let Ok(mut cache) = self.lookup_cache.write() {
-			self.evict_if_full(&mut cache, 1);
-			cache.insert(lookup_path.into(), Arc::clone(&entry));
-		}
+		let entry = Arc::new(self.repository.lookup_with_chunks(cvmfs_path)?);
+		let mut cache = self.lookup_cache.write();
+		self.evict_if_full(&mut cache, 1);
+		cache.insert(lookup_path.into(), Arc::clone(&entry));
 		Ok(entry)
 	}
 
@@ -501,7 +466,7 @@ impl CernvmFileSystem {
 	/// Creates a new `CernvmFileSystem` instance.
 	pub fn new(repository: Repository) -> CvmfsResult<Self> {
 		Ok(Self {
-			repository: RwLock::new(repository),
+			repository,
 			inodes: InodeTable::new(),
 			opened_files: Default::default(),
 			opened_dirs: Default::default(),
@@ -515,6 +480,11 @@ impl CernvmFileSystem {
 		let mut config = Config::default();
 		config.mount_options =
 			vec![MountOption::RO, MountOption::FSName("cernvmfs".into()), MountOption::NoAtime];
+		#[cfg(target_os = "linux")]
+		{
+			config.n_threads = Some(num_cpus());
+			config.clone_fd = true;
+		}
 		fuser::mount2(self, mountpoint, &config)
 	}
 
@@ -538,31 +508,25 @@ impl CernvmFileSystem {
 
 	/// Open a file, returning a file handle.
 	pub fn do_open(&self, path: &str) -> CvmfsResult<u64> {
-		let entry = self.cached_lookup(path)?;
+		let entry = self.cached_lookup_with_chunks(path)?;
 		if !entry.is_file() {
 			return Err(CvmfsError::NotAFile);
 		}
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
-		let file = repo.retrieve_object(&entry, path)?;
-		drop(repo);
+		let file = self.repository.retrieve_object(&entry, path)?;
 		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
-		self.opened_files.write().map_err(|_| CvmfsError::Sync)?.insert(fh, file);
+		self.opened_files.write().insert(fh, file);
 		Ok(fh)
 	}
 
 	/// Release (close) a file handle.
 	pub fn do_release(&self, fh: u64) -> CvmfsResult<()> {
-		self.opened_files
-			.write()
-			.map_err(|_| CvmfsError::Sync)?
-			.remove(&fh)
-			.ok_or(CvmfsError::FileNotFound)?;
+		self.opened_files.write().remove(&fh).ok_or(CvmfsError::FileNotFound)?;
 		Ok(())
 	}
 
 	/// Read data from an open file.
 	pub fn do_read(&self, fh: u64, offset: u64, size: u32) -> CvmfsResult<Vec<u8>> {
-		let files = self.opened_files.read().map_err(|_| CvmfsError::Sync)?;
+		let files = self.opened_files.read();
 		let file = files.get(&fh).ok_or(CvmfsError::FileNotFound)?;
 		let mut buf = vec![0u8; size as usize];
 		let n = file.read_at(offset, &mut buf).map_err(|_| CvmfsError::FileNotFound)?;
@@ -577,31 +541,25 @@ impl CernvmFileSystem {
 		if !entry.is_directory() {
 			return Err(CvmfsError::FileNotFound);
 		}
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
-		let entries = repo.list_directory(cvmfs_path)?;
-		drop(repo);
+		let entries = self.repository.list_directory(cvmfs_path)?;
 		Ok(entries.into_iter().map(|e| (map_dirent_type_to_fs_kind(&e), e.name)).collect())
 	}
 
 	/// Get filesystem statistics.
 	pub fn do_statfs(&self) -> CvmfsResult<(u64, u64)> {
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
-		let stats = repo.get_statistics()?;
+		let stats = self.repository.get_statistics()?;
 		Ok((1 + stats.file_size as u64 / 512, stats.regular as u64))
 	}
 
 	/// Get extended attribute value.
 	pub fn do_getxattr(&self, name: &str) -> CvmfsResult<String> {
-		let repo = self.repository.read().map_err(|e| CvmfsError::Generic(format!("{e:?}")))?;
 		match name {
-			"user.fqrn" => Ok(repo.fqrn.clone()),
-			"user.revision" => Ok(repo.manifest.revision.to_string()),
-			"user.hash" => Ok(repo.manifest.root_catalog.clone()),
-			"user.host" => Ok(repo.fetcher_source()),
-			"user.expires" => Ok(repo.manifest.last_modified.to_rfc3339()),
-			"user.nclg" => {
-				Ok(repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string())
-			}
+			"user.fqrn" => Ok(self.repository.fqrn.clone()),
+			"user.revision" => Ok(self.repository.manifest.revision.to_string()),
+			"user.hash" => Ok(self.repository.manifest.root_catalog.clone()),
+			"user.host" => Ok(self.repository.fetcher_source()),
+			"user.expires" => Ok(self.repository.manifest.last_modified.to_rfc3339()),
+			"user.nclg" => Ok(self.repository.opened_catalogs.read().len().to_string()),
 			_ => Err(CvmfsError::FileNotFound),
 		}
 	}

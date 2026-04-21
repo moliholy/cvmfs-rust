@@ -1,6 +1,7 @@
-use std::{collections::HashMap, fs, fs::File, sync::RwLock};
+use std::{collections::HashMap, fs, fs::File, sync::Arc};
 
 use chrono::{DateTime, Utc};
+use parking_lot::RwLock;
 
 use crate::{
 	catalog::{CATALOG_ROOT_PREFIX, Catalog, Statistics},
@@ -29,13 +30,14 @@ pub struct Repository {
 	pub replicating_since: Option<DateTime<Utc>>,
 	pub last_replication: Option<DateTime<Utc>>,
 	pub replicating: bool,
-	fetcher: Fetcher,
+	fetcher: Arc<Fetcher>,
 	tag: Option<RevisionTag>,
 	catalog_hash_cache: RwLock<HashMap<String, String>>,
 }
 
 impl Repository {
 	pub fn new(fetcher: Fetcher) -> CvmfsResult<Self> {
+		let fetcher = Arc::new(fetcher);
 		let manifest = Self::read_manifest(&fetcher)?;
 		Self::validate_whitelist(&fetcher, &manifest.repository_name)?;
 		let last_replication =
@@ -67,47 +69,40 @@ impl Repository {
 			let external_path = self.fetcher.retrieve_raw_file(path)?;
 			return Ok(Box::new(RegularFile::open(external_path)?));
 		}
-		let mut dirent = dirent.clone();
-		if dirent.chunks.is_empty() {
-			self.load_chunks_for_entry(&mut dirent, path)?;
-		}
-		if dirent.has_chunks() {
-			let chunks: CvmfsResult<Vec<(String, Chunk)>> = dirent
-				.chunks
-				.iter()
-				.cloned()
-				.map(|chunk| -> CvmfsResult<(String, Chunk)> {
-					let path = compose_object_path(chunk.content_hash_string().as_str(), "P")
-						.to_str()
-						.ok_or(CvmfsError::FileNotFound)?
-						.to_string();
-					Ok((path, chunk))
-				})
-				.collect();
-			Ok(Box::new(ChunkedFile::new(
-				chunks?,
-				dirent.size as u64,
-				Fetcher::new(
-					self.fetcher.source.as_str(),
-					self.fetcher.cache.cache_directory.as_str(),
-					false,
-				)?,
-			)))
+		let chunks = if !dirent.chunks.is_empty() {
+			&dirent.chunks
 		} else {
-			let path = self.retrieve_object_with_suffix(
-				dirent
-					.content_hash_string()
-					.expect("Content hash must be present if no chunks")
-					.as_str(),
-				"",
-			)?;
-			Ok(Box::new(RegularFile::open(path)?))
-		}
+			let mut entry = dirent.clone();
+			self.load_chunks_for_entry(&mut entry, path)?;
+			if entry.has_chunks() {
+				return self.open_chunked_file(&entry.chunks, entry.size as u64);
+			}
+			let hash =
+				dirent.content_hash_string().expect("Content hash must be present if no chunks");
+			let file_path = self.retrieve_object_with_suffix(&hash, "")?;
+			return Ok(Box::new(RegularFile::open(file_path)?));
+		};
+		self.open_chunked_file(chunks, dirent.size as u64)
+	}
+
+	fn open_chunked_file(&self, chunks: &[Chunk], size: u64) -> CvmfsResult<Box<dyn FileLike>> {
+		let chunk_paths: CvmfsResult<Vec<(String, Chunk)>> = chunks
+			.iter()
+			.cloned()
+			.map(|chunk| {
+				let path = compose_object_path(chunk.content_hash_string().as_str(), "P")
+					.to_str()
+					.ok_or(CvmfsError::FileNotFound)?
+					.to_string();
+				Ok((path, chunk))
+			})
+			.collect();
+		Ok(Box::new(ChunkedFile::new(chunk_paths?, size, Arc::clone(&self.fetcher))))
 	}
 
 	fn load_chunks_for_entry(&self, entry: &mut DirectoryEntry, path: &str) -> CvmfsResult<()> {
 		let hash = self.resolve_catalog_hash(path)?;
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
 		catalog.load_chunks(entry)
 	}
@@ -123,20 +118,12 @@ impl Repository {
 
 	/// Download and open a catalog from the repository
 	fn ensure_catalog_loaded(&self, catalog_hash: &str) -> CvmfsResult<()> {
-		if self
-			.opened_catalogs
-			.read()
-			.map_err(|_| CvmfsError::Sync)?
-			.contains_key(catalog_hash)
-		{
+		if self.opened_catalogs.read().contains_key(catalog_hash) {
 			return Ok(());
 		}
 		let catalog_file = self.retrieve_object_with_suffix(catalog_hash, CATALOG_ROOT_PREFIX)?;
 		let catalog = Catalog::new(catalog_file, catalog_hash.into())?;
-		self.opened_catalogs
-			.write()
-			.map_err(|_| CvmfsError::Sync)?
-			.insert(catalog_hash.into(), catalog);
+		self.opened_catalogs.write().insert(catalog_hash.into(), catalog);
 		Ok(())
 	}
 
@@ -265,21 +252,17 @@ impl Repository {
 
 	/// Recursively walk down the Catalogs and find the best fit hash for a path
 	fn resolve_catalog_hash(&self, needle_path: &str) -> CvmfsResult<String> {
-		if let Some(cached) =
-			self.catalog_hash_cache.read().ok().and_then(|c| c.get(needle_path).cloned())
-		{
+		if let Some(cached) = self.catalog_hash_cache.read().get(needle_path).cloned() {
 			return Ok(cached);
 		}
 		let mut hash = String::from(self.get_root_hash()?);
 		loop {
 			self.ensure_catalog_loaded(&hash)?;
-			let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+			let catalogs = self.opened_catalogs.read();
 			let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
 			match catalog.find_nested_for_path(needle_path) {
 				Ok(None) => {
-					if let Ok(mut cache) = self.catalog_hash_cache.write() {
-						cache.insert(needle_path.into(), hash.clone());
-					}
+					self.catalog_hash_cache.write().insert(needle_path.into(), hash.clone());
 					return Ok(hash);
 				}
 				Ok(Some(nested_reference)) => {
@@ -295,7 +278,7 @@ impl Repository {
 	pub fn lookup(&self, path: &str) -> CvmfsResult<DirectoryEntry> {
 		let path = if path == "/" { "" } else { path };
 		let hash = self.resolve_catalog_hash(path)?;
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
 		catalog.find_directory_entry(path)
 	}
@@ -303,7 +286,7 @@ impl Repository {
 	pub fn lookup_with_chunks(&self, path: &str) -> CvmfsResult<DirectoryEntry> {
 		let canonical = if path == "/" { "" } else { path };
 		let hash = self.resolve_catalog_hash(canonical)?;
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
 		let mut entry = catalog.find_directory_entry(canonical)?;
 		catalog.load_chunks(&mut entry)?;
@@ -322,7 +305,7 @@ impl Repository {
 	pub fn list_directory(&self, path: &str) -> CvmfsResult<Vec<DirectoryEntry>> {
 		let path = if path == "/" { "" } else { path };
 		let hash = self.resolve_catalog_hash(path)?;
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(&hash).ok_or(CvmfsError::CatalogNotFound)?;
 		catalog.list_directory(path)
 	}
@@ -334,7 +317,7 @@ impl Repository {
 	pub fn get_statistics(&self) -> CvmfsResult<Statistics> {
 		self.retrieve_current_root_catalog()?;
 		let root_hash = self.current_tag()?.hash.to_string();
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(&root_hash).ok_or(CvmfsError::CatalogNotFound)?;
 		catalog.get_statistics()
 	}
@@ -345,7 +328,7 @@ impl Repository {
 	}
 
 	pub fn catalog_count(&self) -> usize {
-		self.opened_catalogs.read().map(|c| c.len()).unwrap_or(0)
+		self.opened_catalogs.read().len()
 	}
 
 	pub fn retrieve_catalog_for_path(&self, path: &str) -> CvmfsResult<String> {
@@ -357,7 +340,7 @@ impl Repository {
 		F: FnOnce(&Catalog) -> CvmfsResult<R>,
 	{
 		self.ensure_catalog_loaded(hash)?;
-		let catalogs = self.opened_catalogs.read().map_err(|_| CvmfsError::Sync)?;
+		let catalogs = self.opened_catalogs.read();
 		let catalog = catalogs.get(hash).ok_or(CvmfsError::CatalogNotFound)?;
 		f(catalog)
 	}

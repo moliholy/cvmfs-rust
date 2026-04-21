@@ -14,9 +14,11 @@ use std::{
 	io::{ErrorKind, Read, Seek, SeekFrom},
 	os::fd::{AsRawFd, RawFd},
 	path::{Path, PathBuf},
-	sync::{Arc, Mutex},
+	sync::Arc,
 	thread,
 };
+
+use parking_lot::Mutex;
 
 use crate::{
 	directory_entry::{Chunk, PathHash},
@@ -49,7 +51,7 @@ pub trait FileLike: Debug + AsRawFd + Send + Sync {
 
 impl FileLike for RegularFile {
 	fn read_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<usize> {
-		let mut file = self.inner.lock().map_err(|_| ErrorKind::Other)?;
+		let mut file = self.inner.lock();
 		file.seek(SeekFrom::Start(offset))?;
 		file.read(buf)
 	}
@@ -75,7 +77,7 @@ impl RegularFile {
 
 impl AsRawFd for RegularFile {
 	fn as_raw_fd(&self) -> RawFd {
-		self.inner.lock().map(|f| f.as_raw_fd()).unwrap_or(-1)
+		self.inner.lock().as_raw_fd()
 	}
 }
 
@@ -100,12 +102,12 @@ struct ChunkedFileState {
 }
 
 impl ChunkedFile {
-	pub(crate) fn new(chunks: Vec<(String, Chunk)>, size: u64, fetcher: Fetcher) -> Self {
+	pub(crate) fn new(chunks: Vec<(String, Chunk)>, size: u64, fetcher: Arc<Fetcher>) -> Self {
 		let num_chunks = chunks.len();
 		Self {
 			chunks,
 			size,
-			fetcher: Arc::new(fetcher),
+			fetcher,
 			state: Mutex::new(ChunkedFileState {
 				open_handles: (0..num_chunks).map(|_| None).collect(),
 				prefetched: HashSet::new(),
@@ -154,7 +156,7 @@ impl FileLike for ChunkedFile {
 			return Ok(0);
 		}
 
-		let mut state = self.state.lock().map_err(|_| ErrorKind::Other)?;
+		let mut state = self.state.lock();
 		let mut position = offset;
 		let mut currently_read = 0;
 
@@ -453,7 +455,7 @@ mod tests {
 		std::fs::create_dir_all(&tmp).unwrap();
 		let cache_dir = tmp.to_str().unwrap();
 		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let cf = ChunkedFile::new(vec![], 0, fetcher);
+		let cf = ChunkedFile::new(vec![], 0, Arc::new(fetcher));
 
 		let mut buf = [0u8; 16];
 		let n = cf.read_at(0, &mut buf).unwrap();
@@ -468,7 +470,7 @@ mod tests {
 		std::fs::create_dir_all(&tmp).unwrap();
 		let cache_dir = tmp.to_str().unwrap();
 		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let cf = ChunkedFile::new(vec![], 1000, fetcher);
+		let cf = ChunkedFile::new(vec![], 1000, Arc::new(fetcher));
 
 		let mut buf = [0u8; 16];
 		let n = cf.read_at(1000, &mut buf).unwrap();
@@ -514,7 +516,7 @@ mod tests {
 				},
 			),
 		];
-		let cf = ChunkedFile::new(chunks, 300, fetcher);
+		let cf = ChunkedFile::new(chunks, 300, Arc::new(fetcher));
 
 		assert_eq!(cf.find_chunk_index(0), Some(0));
 		assert_eq!(cf.find_chunk_index(99), Some(0));
@@ -532,7 +534,7 @@ mod tests {
 		std::fs::create_dir_all(&tmp).unwrap();
 		let cache_dir = tmp.to_str().unwrap();
 		let fetcher = Fetcher::new(cache_dir, cache_dir, true).unwrap();
-		let cf = ChunkedFile::new(vec![], 42, fetcher);
+		let cf = ChunkedFile::new(vec![], 42, Arc::new(fetcher));
 
 		assert_eq!(cf.file_size(), 42);
 

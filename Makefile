@@ -34,3 +34,7 @@ coverage:
 
 bench: release
 	sudo bash bench.sh
+
+bench-docker:
+	docker build -t cvmfs-bench -f Dockerfile.bench .
+	docker run --rm --privileged --device /dev/fuse --cap-add SYS_ADMIN cvmfs-bench
