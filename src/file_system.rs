@@ -11,8 +11,9 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use fuser::{
-	FileAttr, FileType, Filesystem, MountOption, ReplyAttr, ReplyData, ReplyDirectory, ReplyEmpty,
-	ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request,
+	AccessFlags, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+	INodeNo, MountOption, OpenFlags, ReplyAttr, ReplyData, ReplyDirectory, ReplyDirectoryPlus,
+	ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyXattr, Request,
 };
 
 use crate::{
@@ -25,11 +26,10 @@ thread_local! {
 	static READ_BUF: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(128 * 1024));
 }
 
-const FOPEN_KEEP_CACHE: u32 = 0x02;
 const TTL: Duration = Duration::from_secs(3600);
 const FUSE_ROOT_ID: u64 = 1;
 
-type DirListing = Vec<(u64, FileType, String)>;
+type DirListing = Vec<(u64, FileType, String, FileAttr)>;
 
 static NEXT_FH: AtomicU64 = AtomicU64::new(1);
 
@@ -56,7 +56,7 @@ fn make_file_attr(ino: u64, entry: &DirectoryEntry) -> Option<FileAttr> {
 	let time = SystemTime::from(DateTime::<Utc>::from_timestamp(entry.mtime, 0)?);
 	let size = entry.size as u64;
 	Some(FileAttr {
-		ino,
+		ino: INodeNo(ino),
 		size,
 		blocks: 1 + size / 512,
 		atime: time,
@@ -114,14 +114,13 @@ impl InodeTable {
 	}
 }
 
-/// Filesystem statistics cached value
 #[derive(Debug, Clone, Copy)]
 struct CachedStatfs {
 	blocks: u64,
 	files: u64,
 }
 
-/// FUSE filesystem implementation for CernVM-FS using fuser directly.
+/// FUSE filesystem implementation for CernVM-FS.
 #[derive(Debug)]
 pub struct CernvmFileSystem {
 	repository: RwLock<Repository>,
@@ -133,14 +132,14 @@ pub struct CernvmFileSystem {
 }
 
 impl Filesystem for CernvmFileSystem {
-	fn lookup(&mut self, _req: &Request<'_>, parent: u64, name: &OsStr, reply: ReplyEntry) {
+	fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
 		let name = match name.to_str() {
 			Some(n) => n,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
-		let parent_path = match self.inodes.get_path(parent) {
+		let parent_path = match self.inodes.get_path(parent.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let child_path = if parent_path.is_empty() {
 			format!("/{name}")
@@ -149,147 +148,165 @@ impl Filesystem for CernvmFileSystem {
 		};
 		let entry = match self.cached_lookup(&child_path) {
 			Ok(e) => e,
-			Err(_) => return reply.error(libc::ENOENT),
+			Err(_) => return reply.error(Errno::ENOENT),
 		};
 		let ino = self.inodes.get_or_insert(&child_path);
 		match make_file_attr(ino, &entry) {
-			Some(attr) => reply.entry(&TTL, &attr, 0),
-			None => reply.error(libc::EIO),
+			Some(attr) => reply.entry(&TTL, &attr, Generation(0)),
+			None => reply.error(Errno::EIO),
 		}
 	}
 
-	fn getattr(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyAttr) {
-		let path = match self.inodes.get_path(ino) {
+	fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
+		let path = match self.inodes.get_path(ino.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let cvmfs_path = if path.is_empty() { "" } else { &path };
 		let entry = match self.cached_lookup(cvmfs_path) {
 			Ok(e) => e,
-			Err(_) => return reply.error(libc::ENOENT),
+			Err(_) => return reply.error(Errno::ENOENT),
 		};
-		match make_file_attr(ino, &entry) {
+		match make_file_attr(ino.0, &entry) {
 			Some(attr) => reply.attr(&TTL, &attr),
-			None => reply.error(libc::EIO),
+			None => reply.error(Errno::EIO),
 		}
 	}
 
-	fn readlink(&mut self, _req: &Request<'_>, ino: u64, reply: ReplyData) {
-		let path = match self.inodes.get_path(ino) {
+	fn readlink(&self, _req: &Request, ino: INodeNo, reply: ReplyData) {
+		let path = match self.inodes.get_path(ino.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let entry = match self.cached_lookup(&path) {
 			Ok(e) => e,
-			Err(_) => return reply.error(libc::ENOENT),
+			Err(_) => return reply.error(Errno::ENOENT),
 		};
 		if !entry.is_symlink() {
-			return reply.error(libc::EINVAL);
+			return reply.error(Errno::EINVAL);
 		}
 		match &entry.symlink {
 			Some(target) => reply.data(target.as_bytes()),
-			None => reply.error(libc::EIO),
+			None => reply.error(Errno::EIO),
 		}
 	}
 
-	fn open(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-		let path = match self.inodes.get_path(ino) {
+	fn open(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+		let path = match self.inodes.get_path(ino.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let entry = match self.cached_lookup(&path) {
 			Ok(e) => e,
-			Err(_) => return reply.error(libc::ENOENT),
+			Err(_) => return reply.error(Errno::ENOENT),
 		};
 		if !entry.is_file() {
-			return reply.error(libc::EISDIR);
+			return reply.error(Errno::EISDIR);
 		}
 		let repo = match self.repository.read() {
 			Ok(r) => r,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
 		let file = match repo.retrieve_object(&entry, &path) {
 			Ok(f) => f,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
 		drop(repo);
 		let fh = NEXT_FH.fetch_add(1, Ordering::Relaxed);
 		if let Ok(mut files) = self.opened_files.write() {
 			files.insert(fh, file);
 		}
-		reply.opened(fh, FOPEN_KEEP_CACHE);
+		reply.opened(FileHandle(fh), FopenFlags::FOPEN_KEEP_CACHE);
 	}
 
 	fn read(
-		&mut self,
-		_req: &Request<'_>,
-		_ino: u64,
-		fh: u64,
-		offset: i64,
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		offset: u64,
 		size: u32,
-		_flags: i32,
-		_lock_owner: Option<u64>,
+		_flags: OpenFlags,
+		_lock_owner: Option<fuser::LockOwner>,
 		reply: ReplyData,
 	) {
 		let opened_files = match self.opened_files.read() {
 			Ok(guard) => guard,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
-		let file = match opened_files.get(&fh) {
+		let file = match opened_files.get(&fh.0) {
 			Some(f) => f,
-			None => return reply.error(libc::EBADF),
+			None => return reply.error(Errno::EBADF),
 		};
 		READ_BUF.with(|buf| {
 			let mut data = buf.borrow_mut();
 			data.resize(size as usize, 0);
-			match file.read_at(offset as u64, &mut data) {
+			match file.read_at(offset, &mut data) {
 				Ok(n) => reply.data(&data[..n]),
-				Err(_) => reply.error(libc::EIO),
+				Err(_) => reply.error(Errno::EIO),
 			}
 		});
 	}
 
 	fn release(
-		&mut self,
-		_req: &Request<'_>,
-		_ino: u64,
-		fh: u64,
-		_flags: i32,
-		_lock_owner: Option<u64>,
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		_flags: OpenFlags,
+		_lock_owner: Option<fuser::LockOwner>,
 		_flush: bool,
 		reply: ReplyEmpty,
 	) {
 		if let Ok(mut files) = self.opened_files.write() {
-			files.remove(&fh);
+			files.remove(&fh.0);
 		}
 		reply.ok();
 	}
 
-	fn opendir(&mut self, _req: &Request<'_>, ino: u64, _flags: i32, reply: ReplyOpen) {
-		let path = match self.inodes.get_path(ino) {
+	fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+		let path = match self.inodes.get_path(ino.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let cvmfs_path = if path.is_empty() { "" } else { &path };
 		let repo = match self.repository.read() {
 			Ok(r) => r,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
 		let entries = match repo.list_directory(cvmfs_path) {
 			Ok(e) => e,
-			Err(_) => return reply.error(libc::ENOTDIR),
+			Err(_) => return reply.error(Errno::ENOTDIR),
 		};
 		drop(repo);
 
-		let mut all_entries: Vec<(u64, FileType, String)> = Vec::with_capacity(entries.len() + 2);
-		all_entries.push((ino, FileType::Directory, ".".into()));
-		let parent_ino = if ino == FUSE_ROOT_ID {
+		let mut all_entries: DirListing = Vec::with_capacity(entries.len() + 2);
+		let dot_attr = FileAttr {
+			ino,
+			size: 0,
+			blocks: 0,
+			atime: SystemTime::UNIX_EPOCH,
+			mtime: SystemTime::UNIX_EPOCH,
+			ctime: SystemTime::UNIX_EPOCH,
+			crtime: SystemTime::UNIX_EPOCH,
+			kind: FileType::Directory,
+			perm: 0o755,
+			nlink: 2,
+			uid: 0,
+			gid: 0,
+			rdev: 0,
+			blksize: 512,
+			flags: 0,
+		};
+		all_entries.push((ino.0, FileType::Directory, ".".into(), dot_attr));
+		let parent_ino = if ino.0 == FUSE_ROOT_ID {
 			FUSE_ROOT_ID
 		} else {
 			let parent_path = path.rsplit_once('/').map_or(String::new(), |(p, _)| p.into());
 			self.inodes.get_or_insert(&parent_path)
 		};
-		all_entries.push((parent_ino, FileType::Directory, "..".into()));
+		let dotdot_attr = FileAttr { ino: INodeNo(parent_ino), ..dot_attr };
+		all_entries.push((parent_ino, FileType::Directory, "..".into(), dotdot_attr));
 
 		if let Ok(mut cache) = self.lookup_cache.write() {
 			self.evict_if_full(&mut cache, entries.len());
@@ -300,10 +317,12 @@ impl Filesystem for CernvmFileSystem {
 					format!("{}/{}", path, entry.name)
 				};
 				let child_ino = self.inodes.get_or_insert(&child_path);
+				let attr = make_file_attr(child_ino, entry).unwrap_or(dot_attr);
 				all_entries.push((
 					child_ino,
 					map_dirent_type_to_fs_kind(entry),
 					entry.name.clone(),
+					attr,
 				));
 				cache.insert(child_path, Arc::new(entry.clone()));
 			}
@@ -315,10 +334,12 @@ impl Filesystem for CernvmFileSystem {
 					format!("{}/{}", path, entry.name)
 				};
 				let child_ino = self.inodes.get_or_insert(&child_path);
+				let attr = make_file_attr(child_ino, entry).unwrap_or(dot_attr);
 				all_entries.push((
 					child_ino,
 					map_dirent_type_to_fs_kind(entry),
 					entry.name.clone(),
+					attr,
 				));
 			}
 		}
@@ -327,27 +348,51 @@ impl Filesystem for CernvmFileSystem {
 		if let Ok(mut dirs) = self.opened_dirs.write() {
 			dirs.insert(fh, all_entries);
 		}
-		reply.opened(fh, 0);
+		reply.opened(FileHandle(fh), FopenFlags::empty());
 	}
 
 	fn readdir(
-		&mut self,
-		_req: &Request<'_>,
-		_ino: u64,
-		fh: u64,
-		offset: i64,
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		offset: u64,
 		mut reply: ReplyDirectory,
 	) {
 		let dirs = match self.opened_dirs.read() {
 			Ok(d) => d,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
-		let all_entries = match dirs.get(&fh) {
+		let all_entries = match dirs.get(&fh.0) {
 			Some(e) => e,
-			None => return reply.error(libc::EBADF),
+			None => return reply.error(Errno::EBADF),
 		};
-		for (i, (ino, kind, name)) in all_entries.iter().enumerate().skip(offset as usize) {
-			if reply.add(*ino, (i + 1) as i64, *kind, name) {
+		for (i, (ino, kind, name, _)) in all_entries.iter().enumerate().skip(offset as usize) {
+			if reply.add(INodeNo(*ino), (i + 1) as u64, *kind, name) {
+				break;
+			}
+		}
+		reply.ok();
+	}
+
+	fn readdirplus(
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		offset: u64,
+		mut reply: ReplyDirectoryPlus,
+	) {
+		let dirs = match self.opened_dirs.read() {
+			Ok(d) => d,
+			Err(_) => return reply.error(Errno::EIO),
+		};
+		let all_entries = match dirs.get(&fh.0) {
+			Some(e) => e,
+			None => return reply.error(Errno::EBADF),
+		};
+		for (i, (ino, _, name, attr)) in all_entries.iter().enumerate().skip(offset as usize) {
+			if reply.add(INodeNo(*ino), (i + 1) as u64, name, &TTL, attr, Generation(0)) {
 				break;
 			}
 		}
@@ -355,20 +400,20 @@ impl Filesystem for CernvmFileSystem {
 	}
 
 	fn releasedir(
-		&mut self,
-		_req: &Request<'_>,
-		_ino: u64,
-		fh: u64,
-		_flags: i32,
+		&self,
+		_req: &Request,
+		_ino: INodeNo,
+		fh: FileHandle,
+		_flags: OpenFlags,
 		reply: ReplyEmpty,
 	) {
 		if let Ok(mut dirs) = self.opened_dirs.write() {
-			dirs.remove(&fh);
+			dirs.remove(&fh.0);
 		}
 		reply.ok();
 	}
 
-	fn statfs(&mut self, _req: &Request<'_>, _ino: u64, reply: ReplyStatfs) {
+	fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
 		if let Ok(guard) = self.cached_statfs.lock()
 			&& let Some((ts, cached)) = *guard
 			&& ts.elapsed() < Duration::from_secs(5)
@@ -380,7 +425,7 @@ impl Filesystem for CernvmFileSystem {
 				Ok(stats) => (1 + stats.file_size as u64 / 512, stats.regular as u64),
 				Err(_) => (0, 0),
 			},
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
 		if let Ok(mut cache) = self.cached_statfs.lock() {
 			*cache = Some((Instant::now(), CachedStatfs { blocks, files }));
@@ -388,21 +433,14 @@ impl Filesystem for CernvmFileSystem {
 		reply.statfs(blocks, 0, 0, files, 0, 512, 255, 0);
 	}
 
-	fn getxattr(
-		&mut self,
-		_req: &Request<'_>,
-		_ino: u64,
-		name: &OsStr,
-		size: u32,
-		reply: ReplyXattr,
-	) {
+	fn getxattr(&self, _req: &Request, _ino: INodeNo, name: &OsStr, size: u32, reply: ReplyXattr) {
 		let name = match name.to_str() {
 			Some(n) => n,
-			None => return reply.error(libc::ENODATA),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let repo = match self.repository.read() {
 			Ok(r) => r,
-			Err(_) => return reply.error(libc::EIO),
+			Err(_) => return reply.error(Errno::EIO),
 		};
 		let value = match name {
 			"user.fqrn" => repo.fqrn.clone(),
@@ -411,7 +449,7 @@ impl Filesystem for CernvmFileSystem {
 			"user.host" => repo.fetcher_source(),
 			"user.expires" => repo.manifest.last_modified.to_rfc3339(),
 			"user.nclg" => repo.opened_catalogs.read().map(|c| c.len()).unwrap_or(0).to_string(),
-			_ => return reply.error(libc::ENODATA),
+			_ => return reply.error(Errno::ENOENT),
 		};
 		let bytes = value.into_bytes();
 		if size == 0 {
@@ -421,15 +459,15 @@ impl Filesystem for CernvmFileSystem {
 		}
 	}
 
-	fn access(&mut self, _req: &Request<'_>, ino: u64, _mask: i32, reply: ReplyEmpty) {
-		let path = match self.inodes.get_path(ino) {
+	fn access(&self, _req: &Request, ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
+		let path = match self.inodes.get_path(ino.0) {
 			Some(p) => p,
-			None => return reply.error(libc::ENOENT),
+			None => return reply.error(Errno::ENOENT),
 		};
 		let cvmfs_path = if path.is_empty() { "" } else { &path };
 		match self.cached_lookup(cvmfs_path) {
 			Ok(_) => reply.ok(),
-			Err(_) => reply.error(libc::ENOENT),
+			Err(_) => reply.error(Errno::ENOENT),
 		}
 	}
 }
@@ -474,9 +512,10 @@ impl CernvmFileSystem {
 
 	/// Mount the filesystem at the given path.
 	pub fn mount(self, mountpoint: &str) -> std::io::Result<()> {
-		let options =
+		let mut config = Config::default();
+		config.mount_options =
 			vec![MountOption::RO, MountOption::FSName("cernvmfs".into()), MountOption::NoAtime];
-		fuser::mount2(self, mountpoint, &options)
+		fuser::mount2(self, mountpoint, &config)
 	}
 
 	/// Look up a path and return its attributes. Used by tests.

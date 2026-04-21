@@ -30,7 +30,7 @@ clean:
 	cargo clean
 
 coverage:
-	cargo llvm-cov --workspace --lib --test repository_test --lcov --output-path lcov.info
+	cargo llvm-cov --workspace --lib --test repository_test --lcov --output-path lcov.info --ignore-filename-regex "(main|file_system)\.rs"
 
 bench: release
 	sudo bash bench.sh

@@ -30,7 +30,7 @@ x509-certificate = "0.25"
 rusqlite = { version = "0.39", features = ["blob"] }
 
 # Filesystem integration
-fuser = "0.11"
+fuser = "0.17"
 libc = "0.2"
 
 # Network and HTTP
@@ -44,9 +44,13 @@ thiserror = "2.0"
 # Logging
 log = "0.4"
 env_logger = "0.11"
-rsa = { version = "0.9.10", features = ["sha1"] }
-lz4_flex = "0.13.0"
-zstd = "0.13.3"
+rsa = { version = "0.9", features = ["sha1"] }
+lz4_flex = "0.13"
+zstd = "0.13"
+
+[dev-dependencies]
+serial_test = "3.4"
+flate2 = "1.1"
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
@@ -82,7 +86,3 @@ must_use_candidate = "allow"
 doc_markdown = "allow"
 wildcard_imports = "allow"
 ref_option_ref = "allow"
-
-[dev-dependencies]
-serial_test = "3.4.0"
-flate2 = "1"
