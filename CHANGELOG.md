@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.1] - 2026-04-21
+
+### Fixes
+- Bundle SQLite3 for aarch64-linux cross-compilation support
+- Use macOS-14 runner with `PKG_CONFIG_ALLOW_CROSS` for x86_64-apple-darwin builds
+
 ## [0.4.0] - 2026-04-21
 
 ### Performance
