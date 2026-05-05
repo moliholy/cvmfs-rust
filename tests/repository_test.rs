@@ -485,6 +485,15 @@ fn test_fetcher_retrieve_file_cached() -> CvmfsResult<()> {
 	Ok(())
 }
 
+#[test]
+#[serial]
+fn test_repository_fetcher_source() {
+	let repo = create_repo();
+	let source = repo.fetcher_source();
+	assert!(source.starts_with("http"));
+	assert!(source.contains("boss"));
+}
+
 // --- DirectoryEntry properties ---
 
 #[test]

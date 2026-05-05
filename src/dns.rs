@@ -26,7 +26,11 @@ fn lookup_txt_records(query_name: &str) -> CvmfsResult<Vec<String>> {
 	}
 
 	let stdout = String::from_utf8_lossy(&output.stdout);
-	let servers: Vec<String> = stdout
+	Ok(parse_dig_output(&stdout))
+}
+
+fn parse_dig_output(stdout: &str) -> Vec<String> {
+	stdout
 		.lines()
 		.map(|line| line.trim().trim_matches('"').trim().to_string())
 		.filter(|s| !s.is_empty())
@@ -37,9 +41,7 @@ fn lookup_txt_records(query_name: &str) -> CvmfsResult<Vec<String>> {
 				.filter(|s| !s.is_empty())
 				.collect::<Vec<_>>()
 		})
-		.collect();
-
-	Ok(servers)
+		.collect()
 }
 
 pub fn extract_domain(fqrn: &str) -> Option<String> {
@@ -111,5 +113,46 @@ mod tests {
 	fn discover_servers_valid_fqrn() {
 		let result = discover_servers("atlas.cern.ch");
 		assert!(result.is_ok());
+	}
+
+	#[test]
+	fn parse_dig_output_empty() {
+		assert!(parse_dig_output("").is_empty());
+	}
+
+	#[test]
+	fn parse_dig_output_single_record() {
+		let out = parse_dig_output("\"http://stratum1.example.com/cvmfs\"\n");
+		assert_eq!(out, vec!["http://stratum1.example.com/cvmfs"]);
+	}
+
+	#[test]
+	fn parse_dig_output_multiple_lines() {
+		let out = parse_dig_output("\"http://a.example.com\"\n\"http://b.example.com\"\n");
+		assert_eq!(out, vec!["http://a.example.com", "http://b.example.com"]);
+	}
+
+	#[test]
+	fn parse_dig_output_semicolon_split() {
+		let out = parse_dig_output("\"http://a.example.com;http://b.example.com\"\n");
+		assert_eq!(out, vec!["http://a.example.com", "http://b.example.com"]);
+	}
+
+	#[test]
+	fn parse_dig_output_strips_quotes_and_whitespace() {
+		let out = parse_dig_output("  \"  http://a.example.com  \"  \n");
+		assert_eq!(out, vec!["http://a.example.com"]);
+	}
+
+	#[test]
+	fn parse_dig_output_skips_empty_segments() {
+		let out = parse_dig_output("\";http://a.example.com;;http://b.example.com;\"\n");
+		assert_eq!(out, vec!["http://a.example.com", "http://b.example.com"]);
+	}
+
+	#[test]
+	fn parse_dig_output_skips_blank_lines() {
+		let out = parse_dig_output("\n\n\"http://only.example.com\"\n\n");
+		assert_eq!(out, vec!["http://only.example.com"]);
 	}
 }

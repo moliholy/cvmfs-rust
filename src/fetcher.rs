@@ -37,9 +37,18 @@ use crate::{
 
 const MAX_DOWNLOAD_SIZE: u64 = 1024 * 1024 * 1024;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(not(test))]
 const BACKOFF_INIT: Duration = Duration::from_secs(2);
+#[cfg(not(test))]
 const BACKOFF_MAX: Duration = Duration::from_secs(10);
+#[cfg(not(test))]
 const MAX_RETRIES: u32 = 3;
+#[cfg(test)]
+const BACKOFF_INIT: Duration = Duration::from_millis(1);
+#[cfg(test)]
+const BACKOFF_MAX: Duration = Duration::from_millis(2);
+#[cfg(test)]
+const MAX_RETRIES: u32 = 1;
 
 /// Manages retrieval of repository content from both cache and remote sources
 ///
@@ -537,5 +546,196 @@ mod tests {
 		assert!(Path::new(&output).exists());
 		assert!(fs::read(&output).unwrap().len() > 10);
 		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	use std::{
+		io::{Read as IoRead, Write as IoWrite},
+		net::TcpListener,
+	};
+
+	fn http_response(body: &[u8], status_line: &str) -> Vec<u8> {
+		let mut resp = format!(
+			"HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+			body.len()
+		)
+		.into_bytes();
+		resp.extend_from_slice(body);
+		resp
+	}
+
+	fn http_response_with_length(body: &[u8], status_line: &str, declared_len: u64) -> Vec<u8> {
+		let mut resp = format!(
+			"HTTP/1.1 {status_line}\r\nContent-Length: {declared_len}\r\nConnection: close\r\n\r\n"
+		)
+		.into_bytes();
+		resp.extend_from_slice(body);
+		resp
+	}
+
+	fn spawn_responder(responses: Vec<Vec<u8>>) -> String {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		thread::spawn(move || {
+			for resp in responses {
+				let Ok((mut stream, _)) = listener.accept() else { return };
+				let mut buf = [0u8; 4096];
+				let _ = stream.read(&mut buf);
+				let _ = stream.write_all(&resp);
+			}
+		});
+		format!("http://{addr}")
+	}
+
+	fn zlib_compress(data: &[u8]) -> Vec<u8> {
+		use std::io::Write;
+		let mut encoder =
+			flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
+		encoder.write_all(data).unwrap();
+		encoder.finish().unwrap()
+	}
+
+	#[test]
+	fn validated_get_http_error_retries_and_fails() {
+		let cache_dir = tmp_cache("get_500");
+		let body = http_response(b"err", "500 Internal Server Error");
+		let url = spawn_responder(vec![body.clone(), body.clone()]);
+		let fetcher = Fetcher::new(&url, &cache_dir, false).unwrap();
+		let result = fetcher.validated_get(&url);
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn validated_get_too_large_errors_fast() {
+		let cache_dir = tmp_cache("get_big");
+		let body = http_response_with_length(b"x", "200 OK", MAX_DOWNLOAD_SIZE + 1);
+		let url = spawn_responder(vec![body]);
+		let fetcher = Fetcher::new(&url, &cache_dir, false).unwrap();
+		let result = fetcher.validated_get(&url);
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn validated_get_network_error_retries() {
+		let cache_dir = tmp_cache("get_neterr");
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		drop(listener);
+		let url = format!("http://{addr}");
+		let fetcher = Fetcher::new(&url, &cache_dir, false).unwrap();
+		let result = fetcher.validated_get(&url);
+		assert!(result.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn download_content_and_decompress_writes_decompressed() {
+		let cache_dir = tmp_cache("dec_dl");
+		let payload = zlib_compress(b"decompressed payload");
+		let body = http_response(&payload, "200 OK");
+		let url = spawn_responder(vec![body]);
+		let fetcher = Fetcher::new(&url, &cache_dir, false).unwrap();
+		let cached = format!("{cache_dir}/out");
+		fetcher.download_content_and_decompress(&cached, &url).unwrap();
+		assert_eq!(fs::read_to_string(&cached).unwrap(), "decompressed payload");
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_from_source_downloads_and_caches() {
+		let cache_dir = tmp_cache("from_src");
+		let payload = zlib_compress(b"from source body");
+		let body = http_response(&payload, "200 OK");
+		let url = spawn_responder(vec![body]);
+		let fetcher = Fetcher::new(&url, &cache_dir, true).unwrap();
+		let path = fetcher.retrieve_file_from_source("data/myfile").unwrap();
+		assert_eq!(fs::read_to_string(&path).unwrap(), "from source body");
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_network_success_caches_payload() {
+		let cache_dir = tmp_cache("net_ok");
+		let payload = zlib_compress(b"network ok");
+		let body = http_response(&payload, "200 OK");
+		let url = spawn_responder(vec![body]);
+		let fetcher = Fetcher::new(&url, &cache_dir, true).unwrap();
+		let path = fetcher.retrieve_file("data/aa/file").unwrap();
+		assert_eq!(fs::read_to_string(&path).unwrap(), "network ok");
+		assert!(!fetcher.is_offline());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_network_no_cache_propagates_error() {
+		let cache_dir = tmp_cache("no_cache");
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		drop(listener);
+		let url = format!("http://{addr}");
+		let fetcher = Fetcher::new(&url, &cache_dir, true).unwrap();
+		let result = fetcher.retrieve_file("nonexistent_uncached");
+		assert!(result.is_err());
+		assert_eq!(fetcher.io_error_count(), 1);
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn retrieve_file_verified_success_and_mismatch() {
+		let cache_dir = tmp_cache("verified");
+		let fetcher = Fetcher::new("http://example.com", &cache_dir, true).unwrap();
+		let payload = b"verified payload";
+		let mut hasher = Sha1::new();
+		hasher.update(payload);
+		let hash = hex::encode(hasher.finalize());
+		fs::write(format!("{cache_dir}/file_v"), payload).unwrap();
+		let path = fetcher.retrieve_file_verified("file_v", &hash).unwrap();
+		assert!(path.contains("file_v"));
+		let bad =
+			fetcher.retrieve_file_verified("file_v", "0000000000000000000000000000000000000000");
+		assert!(bad.is_err());
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn sort_mirrors_by_geo_reorders() {
+		let cache_dir = tmp_cache("sort_mirrors");
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		thread::spawn(move || {
+			if let Ok((mut stream, _)) = listener.accept() {
+				let mut buf = [0u8; 4096];
+				let _ = stream.read(&mut buf);
+				let body = b"2,1,3\n";
+				let resp = format!(
+					"HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+					body.len()
+				);
+				let _ = stream.write_all(resp.as_bytes());
+				let _ = stream.write_all(body);
+			}
+		});
+		let geo_url = format!("http://{addr}");
+		let mut fetcher = Fetcher::with_mirrors(
+			&[geo_url.as_str(), "http://b.example.com", "http://c.example.com"],
+			&cache_dir,
+			false,
+		)
+		.unwrap();
+		fetcher.sort_mirrors_by_geo("repo");
+		assert_eq!(fetcher.mirrors.len(), 2);
+		fs::remove_dir_all(&cache_dir).ok();
+	}
+
+	#[test]
+	fn with_mirrors_local_dir_mirror() {
+		let cache_dir = tmp_cache("mirrors_local");
+		let mirror_dir = tmp_cache("mirror_repo");
+		let fetcher =
+			Fetcher::with_mirrors(&["http://a.com", &mirror_dir], &cache_dir, false).unwrap();
+		assert!(fetcher.mirrors[0].starts_with("file://"));
+		fs::remove_dir_all(&cache_dir).ok();
+		fs::remove_dir_all(&mirror_dir).ok();
 	}
 }

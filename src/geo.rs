@@ -139,4 +139,79 @@ mod tests {
 		let result = sort_servers_by_geo("http://geo.api", "repo", &servers).unwrap();
 		assert!(result.is_empty());
 	}
+
+	use std::{
+		io::{Read as _, Write as _},
+		net::TcpListener,
+		thread,
+	};
+
+	fn spawn_geo_server(body: &'static str, status_line: &'static str) -> String {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let addr = listener.local_addr().unwrap();
+		thread::spawn(move || {
+			if let Ok((mut stream, _)) = listener.accept() {
+				let mut buf = [0u8; 1024];
+				let _ = stream.read(&mut buf);
+				let response = format!(
+					"HTTP/1.1 {status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+					body.len()
+				);
+				let _ = stream.write_all(response.as_bytes());
+			}
+		});
+		format!("http://{addr}")
+	}
+
+	#[test]
+	fn sort_with_geo_response_reorders() {
+		let geo_url = spawn_geo_server("3,1,2\n", "200 OK");
+		let servers = vec![
+			"http://a.example.com/cvmfs".to_string(),
+			"http://b.example.com/cvmfs".to_string(),
+			"http://c.example.com/cvmfs".to_string(),
+		];
+		let sorted = sort_servers_by_geo(&geo_url, "atlas.cern.ch", &servers).unwrap();
+		assert_eq!(sorted[0], "http://c.example.com/cvmfs");
+		assert_eq!(sorted[1], "http://a.example.com/cvmfs");
+		assert_eq!(sorted[2], "http://b.example.com/cvmfs");
+	}
+
+	#[test]
+	fn sort_with_partial_geo_response_appends_unranked() {
+		let geo_url = spawn_geo_server("2\n", "200 OK");
+		let servers = vec![
+			"http://a.example.com".to_string(),
+			"http://b.example.com".to_string(),
+			"http://c.example.com".to_string(),
+		];
+		let sorted = sort_servers_by_geo(&geo_url, "repo", &servers).unwrap();
+		assert_eq!(sorted[0], "http://b.example.com");
+		assert!(sorted.contains(&"http://a.example.com".to_string()));
+		assert!(sorted.contains(&"http://c.example.com".to_string()));
+		assert_eq!(sorted.len(), 3);
+	}
+
+	#[test]
+	fn sort_with_geo_failure_returns_input() {
+		let geo_url = spawn_geo_server("error\n", "500 Internal Server Error");
+		let servers = vec!["http://a.example.com".to_string(), "http://b.example.com".to_string()];
+		let sorted = sort_servers_by_geo(&geo_url, "repo", &servers).unwrap();
+		assert_eq!(sorted, servers);
+	}
+
+	#[test]
+	fn sort_trims_trailing_slash_in_geo_url() {
+		let geo_url = spawn_geo_server("1,2\n", "200 OK");
+		let with_slash = format!("{geo_url}/");
+		let servers = vec!["http://a.example.com".to_string(), "http://b.example.com".to_string()];
+		let sorted = sort_servers_by_geo(&with_slash, "repo", &servers).unwrap();
+		assert_eq!(sorted, servers);
+	}
+
+	#[test]
+	fn extract_hostname_file_scheme() {
+		assert_eq!(extract_hostname("file:///srv/repo"), "");
+		assert_eq!(extract_hostname("file://hostname/srv"), "hostname");
+	}
 }
