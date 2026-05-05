@@ -7,7 +7,7 @@ edition = "2024"
 license = "BSD-3-Clause"
 repository = "https://github.com/moliholy/cvmfs-rust"
 keywords = ["cvmfs", "filesystem", "fuse", "cernvm"]
-categories = ["filesystem", "science"]
+categories = ["filesystem", "science", "caching", "command-line-utilities"]
 readme = "README.md"
 
 [lib]

@@ -37,6 +37,8 @@ The original CernVM-FS client is written in C++. This project rewrites the clien
 
 ## Installation
 
+Published on [crates.io/crates/cvmfs](https://crates.io/crates/cvmfs).
+
 ### cargo-binstall (recommended)
 
 ```bash
@@ -112,18 +114,18 @@ RUST_LOG=info cvmfs-cli http://cvmfs-stratum-one.cern.ch/opt/boss /tmp/cvmfs_mou
 ```rust
 use cvmfs::{fetcher::Fetcher, repository::Repository};
 
-let fetcher = Fetcher::new("http://cvmfs-stratum-one.cern.ch/opt/boss", "/tmp/cache", true) ?;
-let mut repo = Repository::new(fetcher) ?;
+let fetcher = Fetcher::new("http://cvmfs-stratum-one.cern.ch/opt/boss", "/tmp/cache", true)?;
+let mut repo = Repository::new(fetcher)?;
 
 // List root directory
-for entry in repo.list_directory("/") ? {
-println ! ("{} ({})", entry.name, if entry.is_directory() { "dir" } else { "file" });
+for entry in repo.list_directory("/")? {
+    println!("{} ({})", entry.name, if entry.is_directory() { "dir" } else { "file" });
 }
 
 // Read a file
-let mut file = repo.get_file("/testfile") ?;
+let mut file = repo.get_file("/testfile")?;
 let mut contents = String::new();
-file.read_to_string( & mut contents) ?;
+file.read_to_string(&mut contents)?;
 ```
 
 ### Mirror failover
@@ -132,10 +134,10 @@ file.read_to_string( & mut contents) ?;
 use cvmfs::fetcher::Fetcher;
 
 let fetcher = Fetcher::with_mirrors(
-& ["http://primary.cern.ch/opt/boss", "http://mirror1.cern.ch/opt/boss"],
-"/tmp/cache",
-true,
-) ?;
+    &["http://primary.cern.ch/opt/boss", "http://mirror1.cern.ch/opt/boss"],
+    "/tmp/cache",
+    true,
+)?;
 ```
 
 ### DNS-based discovery
@@ -143,7 +145,7 @@ true,
 ```rust
 use cvmfs::dns::discover_servers;
 
-let servers = discover_servers("boss.cern.ch") ?;
+let servers = discover_servers("boss.cern.ch")?;
 ```
 
 ## Benchmarks
