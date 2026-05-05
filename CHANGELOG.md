@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.4.2] - 2026-05-05
+
+### Tests
+- Raise coverage above 90% across all modules (94% region / 97% line total)
+- HTTP mock-based unit tests for `geo`, `fetcher` (retries, decompress, mirrors, verified retrieval)
+- Parser-level tests for `dns` TXT record handling
+
+### Docs
+- Add crates.io link and extra package categories
+
 ## [0.4.1] - 2026-04-21
 
 ### Fixes
